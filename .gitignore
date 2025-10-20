@@ -1,0 +1,56 @@
+# ---- Python / FastAPI ----
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Виртуальные окружения
+venv/
+.env/
+.venv/
+.python-version
+
+# Конфиги/секреты
+*.env
+*.env.*
+.envrc
+
+# IDE / редакторы
+.vscode/
+.idea/
+*.iml
+
+# Тесты / линтеры / кэш
+.pytest_cache/
+.mypy_cache/
+ruff_cache/
+.pyre/
+coverage.xml
+.coverage*
+htmlcov/
+.cache/
+
+# Логи и временные файлы
+*.log
+logs/
+*.tmp
+*.swp
+*.swo
+
+# Системный мусор
+.DS_Store
+Thumbs.db
+
+# Если в static хранятся загруженные файлы, не версионируй их:
+# (оставь саму папку, но игнорируй содержимое)
+static/*
+!static/.gitkeep
+
+# Бэкапы/дампы БД (если вдруг складываешь сюда)
+dump/
+backups/
