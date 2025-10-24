@@ -1,5 +1,5 @@
 import os
-from fastapi import FastAPI, Depends, Body
+from fastapi import FastAPI, Depends, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import auth, crud, field_defs
@@ -10,6 +10,8 @@ from .routers_project_files import router as project_files_router
 from .routers_reports import router as reports_router
 from .schemas import PersonAccessUpdate, ProjectAccessUpdate
 from .services import sync_person_projects, sync_project_persons
+from .routers_worklog import router as worklog_router
+from .routers_specs import router as specs_router
 
 app = FastAPI(title="Work Manager API")
 
@@ -47,12 +49,20 @@ async def ensure_indexes():
         await db["projects"].create_index("accessPersons")
     except Exception:
         pass
+    
+    try:
+        await db["spec_sections"].create_index([("tenantId",1),("projectId",1),("order",1)])
+        await db["spec_items"].create_index([("tenantId",1),("projectId",1),("sectionId",1),("archived",1)])
+    except Exception:
+        pass
 
 app.include_router(auth.router, tags=["auth"])
 app.include_router(me_router)
 app.include_router(admin_logs_router)
 app.include_router(project_files_router)
 app.include_router(reports_router)
+app.include_router(worklog_router)
+app.include_router(specs_router)
 
 @app.get("/api/meta")
 async def meta():
@@ -81,6 +91,10 @@ async def list_entities(
     archived: str | None = None,
     updatedFrom: str | None = None,
     updatedTo: str | None = None,
+    # ↓↓↓ ДОБАВЛЕНО ↓↓↓
+    projectId: str | None = None,
+    project_id: str | None = None,
+    # ↑↑↑ ДОБАВЛЕНО ↑↑↑
     page: int = 1,
     limit: int = 25,
     sort: str = "-updatedAt",
@@ -92,6 +106,10 @@ async def list_entities(
         "archived": archived,
         "updatedFrom": updatedFrom,
         "updatedTo": updatedTo,
+        # ↓↓↓ ДОБАВЛЕНО ↓↓↓
+        "projectId": projectId,
+        "project_id": project_id,
+        # ↑↑↑ ДОБАВЛЕНО ↑↑↑
         "page": page,
         "limit": limit,
         "sort": sort,
@@ -128,3 +146,4 @@ async def set_person_access(person_id: str, body: PersonAccessUpdate, user=Depen
 @app.post("/api/project/{project_id}/access")
 async def set_project_access(project_id: str, body: ProjectAccessUpdate, user=Depends(auth.get_current_user)):
     return await sync_project_persons(db, user["tenantId"], project_id, body.personIds)
+

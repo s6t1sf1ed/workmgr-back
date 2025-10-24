@@ -24,6 +24,7 @@ collections = {
     "report_photo": db.report_photos,
     "files": db.files,           # (у тебя уже используется в routers_project_files)
     "audit_log": db.audit_log,
+    "work_logs": db.work_logs,
     # опционально, чтобы было под рукой:
     # "file": db.files,
     # "audit_log": db.audit_logs,
@@ -69,3 +70,6 @@ async def ensure_indexes():
 
     await collections["project"].create_index([("tenantId", 1), ("ask_location", 1)])
     await collections["project"].create_index([("tenantId", 1), ("latitude", 1), ("longitude", 1)])
+
+    await collections["work_logs"].create_index([("tenantId",1),("projectId",1),("date",1)])
+    await collections["work_logs"].create_index([("tenantId",1),("projectId",1),("createdAt",-1)])

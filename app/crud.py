@@ -7,12 +7,12 @@ import re
 from .audit import log_action, make_diff
 from .services import ensure_default_project
 
-# как коллекции названы в БД
+# соответствие «человек→коллекция в БД»
 COLL_MAP = {
-    "person": "person",     # целевая коллекция — в единственном числе
+    "person":  "person",
     "persons": "persons",
     "project": "projects",
-    "task": "tasks",
+    "task":    "tasks",
 }
 def coll_name(name: str) -> str:
     return COLL_MAP.get(name, name)
@@ -32,7 +32,7 @@ def oid(v):
     except Exception:
         return v
 
-# глубокая нормализация ObjectId → str
+# ───────── helpers: нормализация ObjectId → str ─────────
 def _norm_value(v: Any) -> Any:
     if isinstance(v, ObjectId):
         return str(v)
@@ -141,7 +141,7 @@ def _to_bool(val: Any) -> bool:
             return False
     return False
 
-# ----------------- LIST -----------------
+# ───────── LIST ─────────
 async def list_entities(db, coll: str, user: Dict[str, Any], q: Dict[str, Any]) -> Dict[str, Any]:
     page, limit, sort_parts = parse_pagination(q)
 
@@ -176,6 +176,37 @@ async def list_entities(db, coll: str, user: Dict[str, Any], q: Dict[str, Any]) 
     if upd:
         and_conds.append({"updatedAt": upd})
 
+    # важное: фильтр по проекту ДЛЯ ЗАДАЧ
+    if coll in ("task", "tasks"):
+        raw_pid = q.get("projectId", q.get("project_id"))
+        pid: Any
+        if isinstance(raw_pid, str):
+            pid = raw_pid.strip()
+        else:
+            pid = raw_pid
+
+        if raw_pid is not None:  # параметр передан
+            # inbox = без проекта
+            if pid == "" or (isinstance(pid, str) and pid.lower() in {"inbox", "none", "null"}):
+                and_conds.append({
+                    "$or": [
+                        {"projectId": {"$exists": False}},
+                        {"projectId": None},
+                        {"projectId": ""},
+                        {"project_id": {"$exists": False}},
+                        {"project_id": None},
+                        {"project_id": ""},
+                    ]
+                })
+            else:
+                # поддерживаем оба поля
+                and_conds.append({
+                    "$or": [
+                        {"projectId": oid(pid)},
+                        {"project_id": oid(pid)},
+                    ]
+                })
+
     filt: Dict[str, Any]
     if len(and_conds) == 1:
         filt = and_conds[0]
@@ -192,7 +223,7 @@ async def list_entities(db, coll: str, user: Dict[str, Any], q: Dict[str, Any]) 
     docs = await cursor.to_list(length=limit)
     total = await db[coll].count_documents(filt)
 
-    if coll == "person" and total == 0:
+    if coll in ("person",) and total == 0:
         created_cnt = await _backfill_persons_for_tenant(db, user.get("tenantId"))
         if created_cnt:
             cursor = (
@@ -208,12 +239,15 @@ async def list_entities(db, coll: str, user: Dict[str, Any], q: Dict[str, Any]) 
     items = [normalize(d) for d in docs]
     return {"items": items, "page": page, "limit": limit, "total": total}
 
-# ----------------- CREATE -----------------
+# ───────── CREATE ─────────
 async def create_entity(db, coll: str, user: Dict[str, Any], data: Dict[str, Any]) -> Dict[str, Any]:
     now = datetime.utcnow()
 
-    # для коллекции tasks (задачи) нормализуем статус и проект
-    if coll == "tasks":
+    if coll in ("task", "tasks"):
+        # приводим к единому имени поля
+        if "project_id" in data and not data.get("projectId"):
+            data["projectId"] = data.pop("project_id")
+
         status_val = data.get("status") or data.get("statusKey") or "new"
         norm, set_arch = _normalize_status(status_val)
         data["status"] = norm
@@ -224,11 +258,12 @@ async def create_entity(db, coll: str, user: Dict[str, Any], data: Dict[str, Any
         if not data.get("projectId"):
             default_pid = await ensure_default_project(db, user["tenantId"])
             data["projectId"] = oid(default_pid)
+        else:
+            data["projectId"] = oid(data["projectId"])
 
-    # документ для вставки
     doc = {
         **data,
-        "tenantId": oid(user.get("tenantId")),   # ← тут убрана лишняя скобка
+        "tenantId": oid(user.get("tenantId")),
         "archived": bool(data.get("archived", False)),
         "createdAt": now,
         "updatedAt": now,
@@ -236,12 +271,10 @@ async def create_entity(db, coll: str, user: Dict[str, Any], data: Dict[str, Any
     if "extra" not in doc or not isinstance(doc["extra"], dict):
         doc["extra"] = {}
 
-    # запись
     res = await db[coll].insert_one(doc)
     created = await db[coll].find_one({"_id": res.inserted_id})
     out = normalize(created)
 
-    # логирование
     try:
         singular = coll[:-1] if coll.endswith("s") else coll
         title = human_title(singular, created)
@@ -262,20 +295,24 @@ async def create_entity(db, coll: str, user: Dict[str, Any], data: Dict[str, Any
 
     return out
 
-# ----------------- READ -----------------
+# ───────── READ ─────────
 async def get_entity(db, coll: str, user: Dict[str, Any], _id: str) -> Dict[str, Any]:
     doc = await db[coll].find_one({"_id": oid(_id), "tenantId": oid(user.get("tenantId"))})
     if not doc:
         raise HTTPException(status_code=404, detail="Not found")
     return normalize(doc)
 
-# ----------------- UPDATE -----------------
+# ───────── UPDATE ─────────
 async def update_entity(db, coll: str, user: Dict[str, Any], _id: str, data: Dict[str, Any]) -> Dict[str, Any]:
     data = {k: v for k, v in data.items() if k not in {"_id", "tenantId", "createdAt"}}
     if coll == "person":
         data.pop("userId", None)
 
-    if coll == "tasks":
+    if coll in ("task", "tasks"):
+        # унифицируем projectId
+        if "project_id" in data and not data.get("projectId"):
+            data["projectId"] = data.pop("project_id")
+
         if ("status" in data) or ("statusKey" in data):
             status_val = data.get("status") or data.get("statusKey")
             if status_val is not None:
@@ -285,11 +322,12 @@ async def update_entity(db, coll: str, user: Dict[str, Any], _id: str, data: Dic
                     data["archived"] = True
             data.pop("statusKey", None)
 
-        if "projectId" in data and not data.get("projectId"):
-            default_pid = await ensure_default_project(db, user["tenantId"])
-            data["projectId"] = oid(default_pid)
-        if "projectId" in data and data.get("projectId"):
-            data["projectId"] = oid(data["projectId"])
+        if "projectId" in data:
+            if data.get("projectId"):
+                data["projectId"] = oid(data["projectId"])
+            else:
+                default_pid = await ensure_default_project(db, user["tenantId"])
+                data["projectId"] = oid(default_pid)
 
     data["updatedAt"] = datetime.utcnow()
 
@@ -334,7 +372,7 @@ async def update_entity(db, coll: str, user: Dict[str, Any], _id: str, data: Dic
 
     return out
 
-# ----------------- DELETE -----------------
+# ───────── DELETE ─────────
 async def delete_entity(db, coll: str, user: Dict[str, Any], _id: str) -> Dict[str, Any]:
     d = await db[coll].find_one({"_id": oid(_id), "tenantId": oid(user.get("tenantId"))})
     if not d:
