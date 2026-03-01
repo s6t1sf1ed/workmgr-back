@@ -1,4 +1,3 @@
-# backend/app/services.py
 from datetime import datetime
 from bson import ObjectId
 from typing import Iterable
@@ -14,10 +13,7 @@ def _oid(x):
         return x
 
 async def ensure_default_project(db, tenant_id: str) -> str:
-    """
-    Возвращает id системного проекта для арендатора.
-    Создаёт его, если ещё нет.
-    """
+    """ Возвращает id системного проекта для арендатора. Создаёт его, если ещё нет """
     t = _oid(tenant_id)
     p = await db.projects.find_one({"tenantId": t, "isSystem": True})
     if p:
@@ -34,31 +30,21 @@ async def ensure_default_project(db, tenant_id: str) -> str:
     res = await db.projects.insert_one(doc)
     return str(res.inserted_id)
 
-# на случай, если где-то используешь другое имя
 ensure_default_project_if_needed = ensure_default_project
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Синхронизация доступов person ↔ project (many-to-many)
+# Синхронизация доступов person <-> project
 
 async def sync_person_projects(db, tenant_id: str, person_id: str, project_ids: Iterable[str]) -> dict:
-    """
-    Источник истины — список project_ids у person.
-    Поля:
-      - person.accessProjects : [ObjectId]
-      - project.accessPersons : [ObjectId]
-    """
+
     t = _oid(tenant_id)
     pid = _oid(person_id)
     proj_oids = [ _oid(x) for x in (project_ids or []) ]
 
-    # обновим person
     await db.person.update_one(
         {"_id": pid, "tenantId": t},
         {"$set": {"accessProjects": proj_oids, "updatedAt": datetime.utcnow()}}
     )
 
-    # вычитаем, какие проекты нужно добавить/убрать ссылки на person
     all_projects = await db.projects.find({"tenantId": t, "$or": [{"_id": {"$in": proj_oids}}, {"accessPersons": pid}]}).to_list(100000)
 
     for prj in all_projects:
@@ -74,20 +60,16 @@ async def sync_person_projects(db, tenant_id: str, person_id: str, project_ids: 
 
 
 async def sync_project_persons(db, tenant_id: str, project_id: str, person_ids: Iterable[str]) -> dict:
-    """
-    Источник истины — список person_ids у project.
-    """
+
     t = _oid(tenant_id)
     prid = _oid(project_id)
     person_oids = [ _oid(x) for x in (person_ids or []) ]
 
-    # обновим project
     await db.projects.update_one(
         {"_id": prid, "tenantId": t},
         {"$set": {"accessPersons": person_oids, "updatedAt": datetime.utcnow()}}
     )
 
-    # вычесть, какие сотрудники нуждаются в апдейте
     persons = await db.person.find({"tenantId": t, "$or": [{"_id": {"$in": person_oids}}, {"accessProjects": prid}]}).to_list(100000)
 
     for p in persons:

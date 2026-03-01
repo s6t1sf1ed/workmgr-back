@@ -1,8 +1,7 @@
-# backend/app/dev_make_admin.py
 import asyncio
 from app.db import db
 
-EMAIL = "vadimka-cha@mail.ru"
+EMAIL = "***"
 
 async def run():
     r = await db.users.update_one({"email": EMAIL}, {"$set": {"role": "admin"}})

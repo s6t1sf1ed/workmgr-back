@@ -12,7 +12,7 @@ class ProjectIn(ExtraModel):
     description: Optional[str] = None
     start: Optional[datetime] = None
     end: Optional[datetime] = None
-    # список сотрудников с доступом (many-to-many)
+    # список сотрудников с доступом
     accessPersons: Optional[List[str]] = None
 
 class PersonIn(ExtraModel):
@@ -20,7 +20,7 @@ class PersonIn(ExtraModel):
     lastName: Optional[str] = None
     middleName: Optional[str] = None
     projectId: Optional[str] = None
-    # список проектов с доступом (many-to-many)
+    # список проектов с доступом
     accessProjects: Optional[List[str]] = None
 
 class TaskIn(ExtraModel):
@@ -59,8 +59,12 @@ class ReportIn(BaseModel):
     entry_location_method: str | None = None
     exit_location_method: str | None = None
     archived: bool = False
+    
+    session_log: str | None = None
+    session_duration_sec: float | None = None
+    session_duration_str: str | None = None
 
-# ——— модели для синхронизации доступов ———
+# модели для синхронизации доступов
 
 class PersonAccessUpdate(BaseModel):
     projectIds: List[str] = Field(default_factory=list)

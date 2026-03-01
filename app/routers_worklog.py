@@ -1,11 +1,10 @@
-# backend/app/routers_worklog.py
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
 from datetime import datetime, timezone
 from bson import ObjectId
 
 from .db import db
 from . import auth
-from .utils import to_jsonable  # у тебя уже есть, как в routers_reports
+from .utils import to_jsonable
 
 router = APIRouter(prefix="/api/projects", tags=["worklog"])
 
@@ -20,7 +19,6 @@ def oid(x):
         return x
 
 def norm(d: dict) -> dict:
-    # Унифицируем id'шники в строку и даты в ISO
     out = dict(d)
     if "_id" in out: out["_id"] = str(out["_id"])
     if "tenantId" in out and isinstance(out["tenantId"], ObjectId): out["tenantId"] = str(out["tenantId"])
@@ -33,7 +31,6 @@ def norm(d: dict) -> dict:
 
 @router.get("/{project_id}/worklog")
 async def list_worklog(project_id: str, date: str = Query(..., description="YYYY-MM-DD"), user=Depends(auth.get_current_user)):
-    # фильтруем строго по арендатору/проекту/дате
     cur = db.work_logs.find({
         "tenantId": oid(user["tenantId"]),
         "projectId": oid(project_id),
@@ -52,7 +49,7 @@ async def add_worklog(project_id: str, payload: dict = Body(...), user=Depends(a
     doc = {
         "tenantId": oid(user["tenantId"]),
         "projectId": oid(project_id),
-        "date": date,                # строкой, чтобы совпадало с фронтом
+        "date": date,
         "text": text,
         "authorId": oid(user["_id"]),
         "authorName": user.get("name") or user.get("email") or "",
@@ -77,11 +74,10 @@ async def delete_worklog(project_id: str, wid: str, user=Depends(auth.get_curren
 @router.get("/{project_id}/worklog/dates")
 async def worklog_marked_dates(
     project_id: str,
-    from_: str = Query(..., alias="from"),  # YYYY-MM-DD
-    to: str   = Query(...),                 # YYYY-MM-DD
+    from_: str = Query(..., alias="from"),
+    to: str   = Query(...),
     user=Depends(auth.get_current_user),
 ):
-    # отдаем уникальные даты с записями за интервал
     cur = db.work_logs.find({
         "tenantId": oid(user["tenantId"]),
         "projectId": oid(project_id),

@@ -35,7 +35,7 @@ async def delete_field_def(
     entity: str,
     key: str,
     tenant_id: str,
-    user: Optional[Dict[str, Any]] = None,   # ⬅ принимаем user
+    user: Optional[Dict[str, Any]] = None,
 ):
     q = {"tenantId": oid(tenant_id), "entity": entity, "key": key}
     before = await collections["field"].find_one(q)
@@ -48,7 +48,7 @@ async def delete_field_def(
         await log_action(
             db,
             tenant_id=str(tenant_id),
-            user_id=str((user or {}).get("_id")),      # ⬅ кто
+            user_id=str((user or {}).get("_id")),
             user_name=(user or {}).get("name"),
             action="field.delete",
             entity="field",
@@ -64,7 +64,7 @@ async def delete_field_def(
 async def upsert_field_def(
     payload: Dict[str, Any],
     tenantId: str,
-    user: Optional[Dict[str, Any]] = None,   # ⬅ принимаем user
+    user: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if not payload.get("entity") or not payload.get("key") or not payload.get("type"):
         raise HTTPException(400, "entity, key, type required")
@@ -95,7 +95,6 @@ async def upsert_field_def(
     saved = await collections["field"].find_one(q)
 
     if data["indexed"]:
-        # индекс по extra.<key> в соответствующей коллекции
         await collections[entity].create_index(f"extra.{key}")
 
     # логирование
@@ -111,7 +110,7 @@ async def upsert_field_def(
         await log_action(
             db,
             tenant_id=str(tenantId),
-            user_id=str((user or {}).get("_id")),      # ⬅ кто
+            user_id=str((user or {}).get("_id")),
             user_name=(user or {}).get("name"),
             action=action,
             entity="field",

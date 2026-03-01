@@ -1,4 +1,3 @@
-# app/utils.py
 from __future__ import annotations
 from typing import Any, Dict, List
 from bson import ObjectId
@@ -7,20 +6,16 @@ from datetime import datetime, date
 __all__ = ["oid", "to_jsonable"]
 
 def oid(v: Any) -> Any:
-    """
-    Безопасно приводит строку к ObjectId.
-    Если уже ObjectId — вернёт как есть.
-    Если привести нельзя — вернёт исходное значение.
-    """
+
     if isinstance(v, ObjectId):
         return v
     try:
-        return ObjectId(v)  # type: ignore[arg-type]
+        return ObjectId(v)
     except Exception:
         return v
 
 def _norm(v: Any) -> Any:
-    """Рекурсивная нормализация для JSON: ObjectId→str, даты→isoformat и т.п."""
+    """Рекурсивная нормализация для JSON ObjectId -> str, даты iso format и тп"""
     if isinstance(v, ObjectId):
         return str(v)
     if isinstance(v, (datetime, date)):
@@ -34,8 +29,4 @@ def _norm(v: Any) -> Any:
     return v
 
 def to_jsonable(doc: Any) -> Any:
-    """
-    Применяй перед возвратом через FastAPI, если в ответе есть ObjectId/даты.
-    Принимает dict/list/любую структуру.
-    """
     return _norm(doc)

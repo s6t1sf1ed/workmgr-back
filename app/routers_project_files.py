@@ -5,11 +5,11 @@ from bson import ObjectId
 
 from .db import db
 from . import auth
-from .audit import log_action
+from .audit import log_user_action
 
 router = APIRouter(tags=["project-files"])
 
-# путь хранения: backend/static/uploads/projects/<projectId>/<filename>
+# путь хранения - backend/static/uploads/projects/<projectId>/<filename>
 UPLOAD_ROOT = Path("static/uploads/projects")
 
 
@@ -31,6 +31,18 @@ def _normalize_file(d: dict) -> dict:
         "contentType": d.get("contentType"),
         "uploadedBy": str(d.get("uploadedBy")) if d.get("uploadedBy") else None,
         "uploadedAt": d.get("uploadedAt"),
+    }
+
+def _file_meta(file_doc: dict, project: dict | None = None) -> dict:
+    return {
+        "fileId": str(file_doc.get("_id")) if file_doc.get("_id") else None,
+        "projectId": str(file_doc.get("projectId")) if file_doc.get("projectId") else None,
+        "projectName": (project or {}).get("name") if project else None,
+        "filename": file_doc.get("filename"),
+        "size": file_doc.get("size"),
+        "contentType": file_doc.get("contentType"),
+        "uploadedBy": str(file_doc.get("uploadedBy")) if file_doc.get("uploadedBy") else None,
+        "uploadedAt": file_doc.get("uploadedAt"),
     }
 
 
@@ -74,23 +86,23 @@ async def upload_file(pid: str, file: UploadFile, user=Depends(auth.get_current_
         "uploadedAt": datetime.utcnow(),
     }
     res = await db.files.insert_one(doc)
+    saved_doc = {**doc, "_id": res.inserted_id}
 
     # лог
     try:
-        await log_action(
+        await log_user_action(
             db,
-            tenant_id=str(user["tenantId"]),
-            user_id=str(user["_id"]),
-            user_name=user.get("name"),
-            action="file.upload",
-            entity="files",
+            user,
+            action="project.file.upload",
+            entity="project.file",
             entity_id=str(res.inserted_id),
-            message=f'Пользователь {user.get("name")} загрузил файл «{file.filename}» в проект «{proj.get("name")}».',
+            message=f'Загружен файл «{file.filename}» в проект «{proj.get("name")}».',
+            meta=_file_meta(saved_doc, proj),
         )
     except Exception:
         pass
 
-    return {"ok": True, "file": _normalize_file({**doc, "_id": res.inserted_id})}
+    return {"ok": True, "file": _normalize_file(saved_doc)}
 
 
 @router.delete("/api/files/{fid}")
@@ -109,15 +121,14 @@ async def delete_file(fid: str, user=Depends(auth.get_current_user)):
 
     # лог
     try:
-        await log_action(
+        await log_user_action(
             db,
-            tenant_id=str(user["tenantId"]),
-            user_id=str(user["_id"]),
-            user_name=user.get("name"),
-            action="file.delete",
-            entity="files",
+            user,
+            action="project.file.delete",
+            entity="project.file",
             entity_id=str(fid),
-            message=f'Пользователь {user.get("name")} удалил файл «{f.get("filename")}».',
+            message=f'Удалён файл «{f.get("filename")}» из проекта.',
+            meta=_file_meta(f),
         )
     except Exception:
         pass

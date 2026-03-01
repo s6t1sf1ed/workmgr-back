@@ -22,16 +22,12 @@ collections = {
     "counter": db.counters,
     "report": db.reports,
     "report_photo": db.report_photos,
-    "files": db.files,           # (у тебя уже используется в routers_project_files)
+    "files": db.files,
     "audit_log": db.audit_log,
     "work_logs": db.work_logs,
-    # опционально, чтобы было под рукой:
-    # "file": db.files,
-    # "audit_log": db.audit_logs,
 }
 
 async def ensure_indexes():
-    # --- существующие ---S
     await collections["project"].create_index([("tenantId", 1)])
     await collections["person"].create_index(
         [("tenantId", 1), ("userId", 1)],
@@ -48,9 +44,7 @@ async def ensure_indexes():
     await collections["report"].create_index([("tenantId", 1), ("user_id", 1), ("start_time", -1)])
     await collections["report"].create_index([("tenantId", 1), ("project_id", 1), ("start_time", -1)])
 
-    # --- новые/полезные для апгрейда ---
-
-    # Логи действий (для вкладки «Логи» у админа)
+    # Логи действий (для вкладки Логи у админа)
     await db.audit_logs.create_index([("tenantId", 1), ("createdAt", -1)])
 
     # Файлы проектов
@@ -61,11 +55,11 @@ async def ensure_indexes():
     await collections["task"].create_index([("tenantId", 1), ("updatedAt", -1)])
 
 
-    # Проекты: системный «Без проекта (Inbox)» + поиск по имени в пределах арендатора
+    # системный "Без проекта (Inbox)" + поиск по имени в пределах арендатора
     await collections["project"].create_index([("tenantId", 1), ("isSystem", 1)])
     await collections["project"].create_index([("tenantId", 1), ("name", 1)])
 
-    # Пользователи: фильтр по роли внутри компании (не unique!)
+    # фильтр по роли внутри компании
     await collections["user"].create_index([("tenantId", 1), ("role", 1)])
 
     await collections["project"].create_index([("tenantId", 1), ("ask_location", 1)])
@@ -73,3 +67,6 @@ async def ensure_indexes():
 
     await collections["work_logs"].create_index([("tenantId",1),("projectId",1),("date",1)])
     await collections["work_logs"].create_index([("tenantId",1),("projectId",1),("createdAt",-1)])
+
+    await collections["spec_items"].create_index([("tenantId", 1), ("sectionId", 1), ("parentId", 1), ("pos", 1)],name="spec_items_parent_pos")
+    await collections["spec_items"].create_index([("tenantId", 1), ("sectionId", 1), ("path", 1)],name="spec_items_path")

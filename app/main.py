@@ -12,6 +12,7 @@ from .schemas import PersonAccessUpdate, ProjectAccessUpdate
 from .services import sync_person_projects, sync_project_persons
 from .routers_worklog import router as worklog_router
 from .routers_specs import router as specs_router
+from .routers_person_files import router as person_files_router
 
 app = FastAPI(title="Work Manager API")
 
@@ -43,7 +44,7 @@ async def ensure_indexes():
     except Exception:
         pass
 
-    # индексы для быстрого доступа many-to-many (не обязательны, но полезны)
+    # индексы для быстрого доступа
     try:
         await db["person"].create_index("accessProjects")
         await db["projects"].create_index("accessPersons")
@@ -55,11 +56,16 @@ async def ensure_indexes():
         await db["spec_items"].create_index([("tenantId",1),("projectId",1),("sectionId",1),("archived",1)])
     except Exception:
         pass
+    try:
+        await db["files"].create_index([("tenantId", 1), ("personId", 1), ("uploadedAt", -1)])
+    except Exception:
+        pass
 
 app.include_router(auth.router, tags=["auth"])
 app.include_router(me_router)
 app.include_router(admin_logs_router)
 app.include_router(project_files_router)
+app.include_router(person_files_router)
 app.include_router(reports_router)
 app.include_router(worklog_router)
 app.include_router(specs_router)
@@ -82,7 +88,7 @@ async def delete_field(entity: str, key: str, user=Depends(auth.get_current_user
     return await field_defs.delete_field_def(entity, key, user["tenantId"], user)
 
 
-# ---------- универсальные CRUD-роуты ----------
+# универсальные CRUD-роуты
 @app.get("/api/{entity}")
 async def list_entities(
     entity: str,
@@ -91,10 +97,10 @@ async def list_entities(
     archived: str | None = None,
     updatedFrom: str | None = None,
     updatedTo: str | None = None,
-    # ↓↓↓ ДОБАВЛЕНО ↓↓↓
+
     projectId: str | None = None,
     project_id: str | None = None,
-    # ↑↑↑ ДОБАВЛЕНО ↑↑↑
+
     page: int = 1,
     limit: int = 25,
     sort: str = "-updatedAt",
@@ -106,10 +112,10 @@ async def list_entities(
         "archived": archived,
         "updatedFrom": updatedFrom,
         "updatedTo": updatedTo,
-        # ↓↓↓ ДОБАВЛЕНО ↓↓↓
+
         "projectId": projectId,
         "project_id": project_id,
-        # ↑↑↑ ДОБАВЛЕНО ↑↑↑
+
         "page": page,
         "limit": limit,
         "sort": sort,
@@ -138,7 +144,7 @@ async def delete(entity: str, id: str, user=Depends(auth.get_current_user)):
     return await crud.delete_entity(db, coll, user, id)
 
 
-# ---------- синхронизация доступов person ↔ project ----------
+# синхронизация доступов person <-> project
 @app.post("/api/person/{person_id}/access")
 async def set_person_access(person_id: str, body: PersonAccessUpdate, user=Depends(auth.get_current_user)):
     return await sync_person_projects(db, user["tenantId"], person_id, body.projectIds)

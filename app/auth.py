@@ -16,7 +16,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
-# ---------------- utils ----------------
+# утилиты
 
 def _split_fio(name: str) -> Tuple[str, str, str]:
     parts = (name or "").strip().split()
@@ -42,7 +42,6 @@ def split_name(full: str) -> dict:
         return {"firstName": parts[0], "lastName": "", "middleName": ""}
     if len(parts) == 2:
         return {"lastName": parts[0], "firstName": parts[1], "middleName": ""}
-    # 3+ слов: Фамилия Имя Отчество (остальное в отчество)
     return {"lastName": parts[0], "firstName": parts[1], "middleName": " ".join(parts[2:])}
 
 def norm_email(s: str) -> str:
@@ -54,7 +53,7 @@ def company_slug(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", s)[:64]
 
 def make_join_code() -> str:
-    return secrets.token_hex(3)  # напр. "a3f09b"
+    return secrets.token_hex(3)
 
 def make_token(user: dict) -> str:
     payload = {
@@ -66,12 +65,11 @@ def make_token(user: dict) -> str:
     return jwt.encode(payload, settings.JWT_SECRET, algorithm="HS256")
 
 async def _ensure_person_for_user(user_doc: dict) -> None:
-    """
-    Если у пользователя (в рамках его tenant) нет карточки в коллекции person,
-    создаём её. Работает безопасно повторно.
-    """
-    tid = user_doc["tenantId"]                         # ObjectId
-    uid = user_doc["_id"]                              # ObjectId
+
+    """ Если у пользователя в рамках его компании нет карточки в коллекции person создаём её """
+
+    tid = user_doc["tenantId"]
+    uid = user_doc["_id"]
     person = await collections["person"].find_one({"tenantId": tid, "userId": uid})
     if person:
         return
@@ -92,7 +90,7 @@ async def _ensure_person_for_user(user_doc: dict) -> None:
     }
     ins = await collections["person"].insert_one(person_doc)
 
-    # опционально лог
+    # лог
     try:
         await log_action(
             db,
@@ -122,7 +120,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
     user["tenantId"] = str(user["tenantId"])
     return user
 
-# --------------- schemas ---------------
+# схема 
 
 class RegisterCompanyIn(BaseModel):
     email: EmailStr
@@ -134,7 +132,7 @@ class RegisterEmployeeIn(BaseModel):
     email: EmailStr
     password: str
     name: str
-    company: str  # название компании ИЛИ join-код
+    company: str
 
 class LoginIn(BaseModel):
     email: EmailStr
@@ -144,7 +142,6 @@ class TokenOut(BaseModel):
     access_token: str
     token_type: str = "bearer"
 
-# --------------- endpoints --------------
 
 @router.post("/register-company", response_model=TokenOut)
 async def register_company(body: RegisterCompanyIn):
@@ -222,7 +219,7 @@ async def register_company(body: RegisterCompanyIn):
 
 @router.post("/register", response_model=TokenOut)
 async def register_employee(body: RegisterEmployeeIn):
-    # ищем компанию по joinCode или по имени (без учёта регистра)
+    # ищем компанию по joinCode или по имени
     t = await collections["tenant"].find_one({
         "$or": [
             {"joinCode": body.company},
@@ -285,7 +282,7 @@ async def register_employee(body: RegisterEmployeeIn):
     token = make_token({**user_doc, "_id": u_res.inserted_id})
     return TokenOut(access_token=token)
 
-# алиас на случай, если фронт шлёт на /auth/register-employee
+# алиас, если фронт шлёт на /auth/register-employee
 @router.post("/register-employee", response_model=TokenOut)
 async def register_employee_alias(body: RegisterEmployeeIn):
     return await register_employee(body)
@@ -297,7 +294,6 @@ async def login(body: LoginIn):
     if not user or not pwd.verify(body.password, user.get("passwordHash", "")):
         raise HTTPException(400, "Invalid credentials")
 
-    # ГАРАНТИЯ: есть person-запись для этого пользователя в его компании
     await _ensure_person_for_user(user)
 
     # аудит входа
@@ -313,8 +309,6 @@ async def login(body: LoginIn):
 
     return TokenOut(access_token=make_token(user))
 
-
-# алиас на всякий случай
 @router.post("/signin", response_model=TokenOut)
 async def signin_alias(body: LoginIn):
     return await login(body)
