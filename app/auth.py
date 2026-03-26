@@ -11,6 +11,7 @@ import re, secrets
 from .audit import log_action
 from .db import db
 from .db import collections, settings
+from .permissions import user_permissions
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -60,6 +61,7 @@ def make_token(user: dict) -> str:
         "sub": str(user["_id"]),
         "tenantId": str(user["tenantId"]),
         "role": user.get("role", "user"),
+        "permissions": user_permissions(user),
         "exp": datetime.utcnow() + timedelta(minutes=settings.JWT_EXPIRE_MIN),
     }
     return jwt.encode(payload, settings.JWT_SECRET, algorithm="HS256")
@@ -118,6 +120,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
         raise HTTPException(status_code=401, detail="Invalid token")
     user["_id"] = str(user["_id"])
     user["tenantId"] = str(user["tenantId"])
+    user["permissions"] = user_permissions(user)
     return user
 
 # схема 
@@ -170,6 +173,7 @@ async def register_company(body: RegisterCompanyIn):
         "tenantId": t_res.inserted_id,
         "companyName": body.company,
         "role": "admin",
+        "permissions": user_permissions({"role": "admin"}),
         "createdAt": datetime.utcnow(),
         "updatedAt": datetime.utcnow(),
     }
@@ -240,6 +244,7 @@ async def register_employee(body: RegisterEmployeeIn):
         "tenantId": t["_id"],
         "companyName": t["name"],
         "role": "user",
+        "permissions": user_permissions({"role": "user", "permissions": None}),
         "createdAt": datetime.utcnow(),
         "updatedAt": datetime.utcnow(),
     }

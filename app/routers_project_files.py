@@ -5,6 +5,7 @@ from bson import ObjectId
 
 from .db import db
 from . import auth
+from .permissions import require_permission
 from .audit import log_user_action
 
 router = APIRouter(tags=["project-files"])
@@ -48,6 +49,7 @@ def _file_meta(file_doc: dict, project: dict | None = None) -> dict:
 
 @router.get("/api/projects/{pid}/files")
 async def list_files(pid: str, user=Depends(auth.get_current_user)):
+    require_permission(user, "project_files.view")
     proj = await db.projects.find_one({"_id": oid(pid), "tenantId": oid(user["tenantId"])})
     if not proj:
         raise HTTPException(404, "Проект не найден")
@@ -61,6 +63,7 @@ async def list_files(pid: str, user=Depends(auth.get_current_user)):
 
 @router.post("/api/projects/{pid}/files")
 async def upload_file(pid: str, file: UploadFile, user=Depends(auth.get_current_user)):
+    require_permission(user, "project_files.upload")
     proj = await db.projects.find_one({"_id": oid(pid), "tenantId": oid(user["tenantId"])})
     if not proj:
         raise HTTPException(404, "Проект не найден")
@@ -107,6 +110,7 @@ async def upload_file(pid: str, file: UploadFile, user=Depends(auth.get_current_
 
 @router.delete("/api/files/{fid}")
 async def delete_file(fid: str, user=Depends(auth.get_current_user)):
+    require_permission(user, "project_files.delete")
     f = await db.files.find_one({"_id": oid(fid), "tenantId": oid(user["tenantId"])})
     if not f:
         raise HTTPException(404, "Файл не найден")
@@ -134,3 +138,4 @@ async def delete_file(fid: str, user=Depends(auth.get_current_user)):
         pass
 
     return {"ok": True}
+

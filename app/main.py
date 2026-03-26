@@ -7,12 +7,14 @@ from .db import db
 from .routers_me import router as me_router
 from .routers_admin_logs import router as admin_logs_router
 from .routers_project_files import router as project_files_router
+from .routers_admin_users import router as admin_users_router
 from .routers_reports import router as reports_router
 from .schemas import PersonAccessUpdate, ProjectAccessUpdate
 from .services import sync_person_projects, sync_project_persons
 from .routers_worklog import router as worklog_router
 from .routers_specs import router as specs_router
 from .routers_person_files import router as person_files_router
+from .permissions import require_permission, permission_for_entity_action
 
 app = FastAPI(title="Work Manager API")
 
@@ -64,6 +66,7 @@ async def ensure_indexes():
 app.include_router(auth.router, tags=["auth"])
 app.include_router(me_router)
 app.include_router(admin_logs_router)
+app.include_router(admin_users_router)
 app.include_router(project_files_router)
 app.include_router(person_files_router)
 app.include_router(reports_router)
@@ -76,15 +79,18 @@ async def meta():
 
 @app.get("/api/fields/{entity}")
 async def list_fields(entity: str, user=Depends(auth.get_current_user)):
+    require_permission(user, "fields.view")
     return await field_defs.list_field_defs(entity, user["tenantId"])
 
 @app.post("/api/fields/{entity}")
 async def add_field(entity: str, payload: dict = Body(...), user=Depends(auth.get_current_user)):
+    require_permission(user, "fields.edit")
     payload["entity"] = entity
     return await field_defs.upsert_field_def(payload, user["tenantId"], user)
 
 @app.delete("/api/fields/{entity}/{key}")
 async def delete_field(entity: str, key: str, user=Depends(auth.get_current_user)):
+    require_permission(user, "fields.edit")
     return await field_defs.delete_field_def(entity, key, user["tenantId"], user)
 
 
@@ -121,35 +127,52 @@ async def list_entities(
         "sort": sort,
     }
     coll = crud.coll_name(entity)
+    perm = permission_for_entity_action(coll, "list")
+    if perm:
+        require_permission(user, perm)
     return await crud.list_entities(db, coll, user, params)
 
 @app.post("/api/{entity}")
 async def create(entity: str, payload: dict = Body(...), user=Depends(auth.get_current_user)):
     coll = crud.coll_name(entity)
+    perm = permission_for_entity_action(coll, "create")
+    if perm:
+        require_permission(user, perm)
     return await crud.create_entity(db, coll, user, payload)
 
 @app.get("/api/{entity}/{id}")
 async def get_one(entity: str, id: str, user=Depends(auth.get_current_user)):
     coll = crud.coll_name(entity)
+    perm = permission_for_entity_action(coll, "get")
+    if perm:
+        require_permission(user, perm)
     return await crud.get_entity(db, coll, user, id)
 
 @app.patch("/api/{entity}/{id}")
 async def update(entity: str, id: str, payload: dict = Body(...), user=Depends(auth.get_current_user)):
     coll = crud.coll_name(entity)
+    perm = permission_for_entity_action(coll, "update")
+    if perm:
+        require_permission(user, perm)
     return await crud.update_entity(db, coll, user, id, payload)
 
 @app.delete("/api/{entity}/{id}")
 async def delete(entity: str, id: str, user=Depends(auth.get_current_user)):
     coll = crud.coll_name(entity)
+    perm = permission_for_entity_action(coll, "delete")
+    if perm:
+        require_permission(user, perm)
     return await crud.delete_entity(db, coll, user, id)
 
 
 # синхронизация доступов person <-> project
 @app.post("/api/person/{person_id}/access")
 async def set_person_access(person_id: str, body: PersonAccessUpdate, user=Depends(auth.get_current_user)):
+    require_permission(user, "persons.edit")
     return await sync_person_projects(db, user["tenantId"], person_id, body.projectIds)
 
 @app.post("/api/project/{project_id}/access")
 async def set_project_access(project_id: str, body: ProjectAccessUpdate, user=Depends(auth.get_current_user)):
+    require_permission(user, "projects.edit")
     return await sync_project_persons(db, user["tenantId"], project_id, body.personIds)
 

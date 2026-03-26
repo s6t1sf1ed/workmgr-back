@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse
 
 from .db import db
 from . import auth
+from .permissions import require_permission
 
 
 router = APIRouter(tags=["person-files"])
@@ -53,6 +54,7 @@ def _uploads_root() -> Path:
 
 @router.get("/api/person/{person_id}/files")
 async def list_person_files(person_id: str, user=Depends(auth.get_current_user)):
+    require_permission(user, "person_files.view")
     tid = oid(user["tenantId"])
     pid = oid(person_id)
 
@@ -74,6 +76,7 @@ async def upload_person_file(
     description: Optional[str] = Form(None),  # текстовое описание
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "person_files.upload")
     tid = oid(user["tenantId"])
     pid = oid(person_id)
 
@@ -127,6 +130,7 @@ async def upload_person_file(
 
 @router.get("/api/person-files/{file_id}/download")
 async def download_person_file(file_id: str, user=Depends(auth.get_current_user)):
+    require_permission(user, "person_files.view")
     tid = oid(user["tenantId"])
     fdoc = await db["files"].find_one({"_id": oid(file_id), "tenantId": tid})
     if not fdoc:
@@ -146,6 +150,7 @@ async def download_person_file(file_id: str, user=Depends(auth.get_current_user)
 
 @router.delete("/api/person-files/{file_id}")
 async def delete_person_file(file_id: str, user=Depends(auth.get_current_user)):
+    require_permission(user, "person_files.delete")
     tid = oid(user["tenantId"])
     fdoc = await db["files"].find_one({"_id": oid(file_id), "tenantId": tid})
     if not fdoc:
@@ -162,3 +167,4 @@ async def delete_person_file(file_id: str, user=Depends(auth.get_current_user)):
 
     await db["files"].delete_one({"_id": fdoc["_id"]})
     return {"ok": True}
+

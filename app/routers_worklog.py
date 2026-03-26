@@ -5,6 +5,7 @@ from bson import ObjectId
 from .db import db
 from . import auth
 from .utils import to_jsonable
+from .permissions import require_permission
 
 router = APIRouter(prefix="/api/projects", tags=["worklog"])
 
@@ -31,6 +32,7 @@ def norm(d: dict) -> dict:
 
 @router.get("/{project_id}/worklog")
 async def list_worklog(project_id: str, date: str = Query(..., description="YYYY-MM-DD"), user=Depends(auth.get_current_user)):
+    require_permission(user, "projects.view")
     cur = db.work_logs.find({
         "tenantId": oid(user["tenantId"]),
         "projectId": oid(project_id),
@@ -41,6 +43,7 @@ async def list_worklog(project_id: str, date: str = Query(..., description="YYYY
 
 @router.post("/{project_id}/worklog")
 async def add_worklog(project_id: str, payload: dict = Body(...), user=Depends(auth.get_current_user)):
+    require_permission(user, "projects.edit")
     text = (payload.get("text") or "").strip()
     date = (payload.get("date") or "").strip()  # YYYY-MM-DD
     if not text or not date:
@@ -62,6 +65,7 @@ async def add_worklog(project_id: str, payload: dict = Body(...), user=Depends(a
 
 @router.delete("/{project_id}/worklog/{wid}")
 async def delete_worklog(project_id: str, wid: str, user=Depends(auth.get_current_user)):
+    require_permission(user, "projects.edit")
     res = await db.work_logs.delete_one({
         "_id": oid(wid),
         "tenantId": oid(user["tenantId"]),
@@ -78,6 +82,7 @@ async def worklog_marked_dates(
     to: str   = Query(...),
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.view")
     cur = db.work_logs.find({
         "tenantId": oid(user["tenantId"]),
         "projectId": oid(project_id),

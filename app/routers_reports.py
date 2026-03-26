@@ -10,6 +10,7 @@ from .db import db
 from . import auth
 from .utils import to_jsonable
 from .audit import log_user_action, make_diff
+from .permissions import require_permission
 
 # Время / парсинг
 
@@ -417,6 +418,7 @@ async def list_reports(
     hoursMin: float | None = None,
     hoursMax: float | None = None,
 ):
+    require_permission(user, "reports.view")
     filt, s = _build_filter_and_sort(
         user,
         archived=archived, q=q, person=person, project=project, telegram=telegram,
@@ -444,6 +446,7 @@ async def list_reports(
 
 @router.get("/{rid}")
 async def get_one(rid: str, user=Depends(auth.get_current_user)):
+    require_permission(user, "reports.view")
     # ищем по id + tenantId (строка или ObjectId)
     base = {"_id": oid(rid)}
     if user.get("tenantId"):
@@ -467,6 +470,7 @@ async def get_one(rid: str, user=Depends(auth.get_current_user)):
 
 @router.post("")
 async def create(payload: dict, user=Depends(auth.get_current_user)):
+    require_permission(user, "reports.create")
     _set_dt_if_present(payload, "start_time")
     _set_dt_if_present(payload, "end_time")
     payload["tenantId"] = oid(user["tenantId"]) if user.get("tenantId") else None
@@ -496,6 +500,7 @@ async def create(payload: dict, user=Depends(auth.get_current_user)):
 
 @router.patch("/{rid}")
 async def update(rid: str, payload: dict, user=Depends(auth.get_current_user)):
+    require_permission(user, "reports.edit")
     _set_dt_if_present(payload, "start_time")
     _set_dt_if_present(payload, "end_time")
     payload["updatedAt"] = datetime.now(tz=UTC)
@@ -543,6 +548,7 @@ async def update(rid: str, payload: dict, user=Depends(auth.get_current_user)):
 
 @router.delete("/{rid}")
 async def delete(rid: str, user=Depends(auth.get_current_user)):
+    require_permission(user, "reports.delete")
     base = {"_id": oid(rid)}
     if user.get("tenantId"):
         t = oid(user["tenantId"])
@@ -595,6 +601,7 @@ async def export_xlsx(
     hoursMax: float | None = None,
     sort: str | None = "-start_time",
 ):
+    require_permission(user, "reports.view")
     filt, s = _build_filter_and_sort(
         user,
         archived=archived, q=q, person=person, project=project, telegram=telegram,
@@ -662,6 +669,7 @@ async def export_timesheet_xlsx(
     person: str = Query(..., alias="personId"),
     month: str = Query(..., description="YYYY-MM"),
 ):
+    require_permission(user, "timesheet.view")
 
     # парсим месяц и считаем границы в МСК
     try:
@@ -770,7 +778,7 @@ async def export_timesheet_xlsx(
     }
     for col, w in widths.items():
         ws.column_dimensions[col].width = w
-
+    
     # стили
     gray_fill = PatternFill("solid", fgColor="D9D9D9")   # выходные
     orange_fill = PatternFill("solid", fgColor="FFF2CC") # J/K

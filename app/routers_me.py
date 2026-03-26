@@ -5,6 +5,7 @@ from bson import ObjectId
 from .db import db
 from . import auth
 from .audit import log_user_action, make_diff
+from .permissions import user_permissions
 
 router = APIRouter(prefix="/api/me", tags=["me"])
 
@@ -47,6 +48,7 @@ async def get_me(user=Depends(auth.get_current_user)):
         "login": u.get("login"),
         "telegram_id": u.get("telegram_id"),
         "role": u.get("role", "user"),
+        "permissions": user_permissions(u),
         "company": {
             "id": str(u.get("tenantId")) if u.get("tenantId") else None,
             "name": company_name,
@@ -163,3 +165,4 @@ async def become_admin_if_none(user=Depends(auth.get_current_user)):
         pass
 
     return {"ok": True, "role": "admin"}
+
