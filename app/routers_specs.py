@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional, List
 from datetime import datetime
 from bson import ObjectId
 from .audit import log_user_action, log_project_action, make_diff
+from .permissions import require_permission
 from . import auth
 from .db import db
 import re
@@ -201,6 +202,7 @@ async def spec_sections_list(
     deleted: Optional[int] = Query(None),
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.view")
     q = {
         "tenantId": _oid(user["tenantId"]),
         "projectId": _oid(project_id),
@@ -238,6 +240,7 @@ async def spec_sections_create(
     payload: dict = Body(...),
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.edit")
     now = datetime.utcnow()
     title = (payload.get("title") or "").strip() or "Раздел"
 
@@ -301,6 +304,7 @@ async def spec_sections_update(
     payload: dict = Body(...),
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.edit")
 
     now = datetime.utcnow()
     sec = await db["spec_sections"].find_one({"_id": _oid(section_id), "tenantId": _oid(user["tenantId"])})
@@ -645,12 +649,12 @@ async def spec_sections_update(
         pass
     return {**_norm(after), "columns": cols}
 
-
 @router.delete("/api/spec/sections/{section_id}")
 async def spec_sections_delete_forever(
     section_id: str,
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.edit")
     sec = await db["spec_sections"].find_one({"_id": _oid(section_id), "tenantId": _oid(user["tenantId"])})
     if not sec:
         raise HTTPException(404, "Section not found")
@@ -694,6 +698,7 @@ async def spec_section_export_excel(
     section_id: str,
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.view")
     """
     Экспорт раздела спецификации в Excel.
 
@@ -917,6 +922,7 @@ async def spec_section_import_excel(
     file: UploadFile = File(...),
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.edit")
     sec = await db["spec_sections"].find_one(
         {"_id": _oid(section_id), "tenantId": _oid(user["tenantId"])}
     )
@@ -1237,6 +1243,7 @@ async def spec_items_list(
     sectionId: Optional[str] = Query(None),
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.view")
     q = {"tenantId": _oid(user["tenantId"]), "projectId": _oid(project_id)}
     if deleted is not None:
         q["deleted"] = bool(int(deleted))
@@ -1336,6 +1343,7 @@ async def spec_items_create(
     payload: dict = Body(...),
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.edit")
     now = datetime.utcnow()
     section_id = payload.get("sectionId")
     if not section_id:
@@ -1371,6 +1379,7 @@ async def spec_items_update(
     payload: dict = Body(...),
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.edit")
     now = datetime.utcnow()
     it = await db["spec_items"].find_one({"_id": _oid(item_id), "tenantId": _oid(user["tenantId"])})
     if not it:
@@ -1517,6 +1526,7 @@ async def spec_items_delete_forever(
     item_id: str,
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.edit")
     it = await db["spec_items"].find_one({"_id": _oid(item_id), "tenantId": _oid(user["tenantId"])})
     if not it:
         raise HTTPException(404, "Item not found")
@@ -1537,12 +1547,12 @@ async def spec_items_delete_forever(
         pass
     return {"ok": True}
 
-
 @router.get("/api/spec/items/{item_id}")
 async def spec_item_get(
     item_id: str,
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.view")
     it = await db["spec_items"].find_one({"_id": _oid(item_id), "tenantId": _oid(user["tenantId"])})
     if not it:
         raise HTTPException(404, "Item not found")
@@ -1688,6 +1698,7 @@ async def spec_reorder(
     payload: dict = Body(...),
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.edit")
     section_id = payload.get("sectionId")
     item_id = payload.get("itemId")
     target_parent_id = payload.get("targetParentId")
@@ -1746,6 +1757,7 @@ async def spec_section_attachments_list(
     section_id: str,
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.view")
     sec = await db["spec_sections"].find_one(
         {"_id": _oid(section_id), "tenantId": _oid(user["tenantId"])}
     )
@@ -1795,6 +1807,7 @@ async def spec_section_attachments_upload(
     file: UploadFile = File(...),
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.edit")
     sec = await db["spec_sections"].find_one(
         {"_id": _oid(section_id), "tenantId": _oid(user["tenantId"])}
     )
@@ -1849,6 +1862,7 @@ async def spec_section_attachments_download(
     file_id: str,
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.view")
     sec = await db["spec_sections"].find_one(
         {"_id": _oid(section_id), "tenantId": _oid(user["tenantId"])}
     )
@@ -1889,6 +1903,7 @@ async def spec_section_attachments_delete(
     file_id: str,
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.edit")
     sec = await db["spec_sections"].find_one(
         {"_id": _oid(section_id), "tenantId": _oid(user["tenantId"])}
     )
@@ -1935,6 +1950,7 @@ async def spec_works_list(
     deleted: Optional[int] = Query(None),
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.view")
     q: Dict[str, Any] = {
         "tenantId": _oid(user["tenantId"]),
         "projectId": _oid(project_id),
@@ -1960,6 +1976,7 @@ async def spec_works_create(
     payload: dict = Body(...),
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.edit")
     """ Создать работу по позиции спецификации """
     now = datetime.utcnow()
     item_id = payload.get("itemId")
@@ -2034,6 +2051,7 @@ async def spec_works_update(
     payload: dict = Body(...),
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.edit")
     now = datetime.utcnow()
     work = await db["spec_item_works"].find_one(
         {"_id": _oid(work_id), "tenantId": _oid(user["tenantId"])}
@@ -2097,6 +2115,7 @@ async def spec_works_delete_forever(
     work_id: str,
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.edit")
     work = await db["spec_item_works"].find_one(
         {"_id": _oid(work_id), "tenantId": _oid(user["tenantId"])}
     )
@@ -2179,13 +2198,13 @@ async def _vor_allocations_map(tenant_id, vor_section_id, exclude_item_id=None) 
         out[str(sid)] += _num(row.get("qty"), 0)
     return out
 
-
 @router.get("/api/projects/{project_id}/vor/sections")
 async def vor_sections_list(
     project_id: str,
     deleted: Optional[int] = Query(None),
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.view")
     q: Dict[str, Any] = {
         "tenantId": _oid(user["tenantId"]),
         "projectId": _oid(project_id),
@@ -2208,6 +2227,7 @@ async def vor_sections_create(
     payload: dict = Body(...),
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.edit")
     now = datetime.utcnow()
 
     last = (
@@ -2275,6 +2295,7 @@ async def vor_sections_update(
     payload: dict = Body(...),
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.edit")
     now = datetime.utcnow()
     sec = await db["spec_vor_sections"].find_one(
         {"_id": _oid(section_id), "tenantId": _oid(user["tenantId"])}
@@ -2370,6 +2391,7 @@ async def vor_sections_delete_forever(
     section_id: str,
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.edit")
     sec = await db["spec_vor_sections"].find_one(
         {"_id": _oid(section_id), "tenantId": _oid(user["tenantId"])}
     )
@@ -2412,6 +2434,7 @@ async def vor_works_list(
     deleted: Optional[int] = Query(None),
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.view")
     q: Dict[str, Any] = {
         "tenantId": _oid(user["tenantId"]),
         "projectId": _oid(project_id),
@@ -2436,6 +2459,7 @@ async def vor_works_create(
     payload: dict = Body(...),
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.edit")
     now = datetime.utcnow()
     vor_section_id = payload.get("vorSectionId")
     if not vor_section_id:
@@ -2494,13 +2518,13 @@ async def vor_works_create(
 
     return _norm(created)
 
-
 @router.patch("/api/vor/works/{work_id}")
 async def vor_works_update(
     work_id: str,
     payload: dict = Body(...),
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.edit")
     now = datetime.utcnow()
     work = await db["spec_vor_works"].find_one(
         {"_id": _oid(work_id), "tenantId": _oid(user["tenantId"])}
@@ -2563,6 +2587,7 @@ async def vor_works_delete_forever(
     work_id: str,
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.edit")
     work = await db["spec_vor_works"].find_one(
         {"_id": _oid(work_id), "tenantId": _oid(user["tenantId"])}
     )
@@ -2603,6 +2628,7 @@ async def vor_items_list(
     deleted: Optional[int] = Query(None),
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.view")
     q: Dict[str, Any] = {
         "tenantId": _oid(user["tenantId"]),
         "projectId": _oid(project_id),
@@ -2629,6 +2655,7 @@ async def vor_source_items(
     vorSectionId: str = Query(...),
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.view")
     sec = await db["spec_vor_sections"].find_one(
         {"_id": _oid(vorSectionId), "tenantId": _oid(user["tenantId"])}
     )
@@ -2683,6 +2710,7 @@ async def vor_items_create(
     payload: dict = Body(...),
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.edit")
     now = datetime.utcnow()
     vor_section_id = payload.get("vorSectionId")
     work_id = payload.get("workId")
@@ -2810,13 +2838,13 @@ async def vor_items_create(
 
     return _norm(created)
 
-
 @router.patch("/api/vor/items/{item_id}")
 async def vor_items_update(
     item_id: str,
     payload: dict = Body(...),
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.edit")
     now = datetime.utcnow()
     row = await db["spec_vor_items"].find_one(
         {"_id": _oid(item_id), "tenantId": _oid(user["tenantId"])}
@@ -2908,6 +2936,7 @@ async def vor_items_delete_forever(
     item_id: str,
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.edit")
     row = await db["spec_vor_items"].find_one(
         {"_id": _oid(item_id), "tenantId": _oid(user["tenantId"])}
     )
@@ -2954,6 +2983,7 @@ async def ship_sections_list(
     specSectionId: Optional[str] = Query(None),
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.view")
     q: Dict[str, Any] = {
         "tenantId": _oid(user["tenantId"]),
         "projectId": _oid(project_id),
@@ -2977,6 +3007,7 @@ async def ship_sections_create(
     payload: dict = Body(...),
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.edit")
     now = datetime.utcnow()
     title = (payload.get("title") or "").strip() or "Раздел отгрузки"
     spec_section_id = payload.get("specSectionId")
@@ -3040,6 +3071,7 @@ async def ship_sections_update(
     payload: dict = Body(...),
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.edit")
     now = datetime.utcnow()
     sec = await db["spec_ship_sections"].find_one(
         {"_id": _oid(section_id), "tenantId": _oid(user["tenantId"])}
@@ -3115,6 +3147,7 @@ async def ship_sections_delete_forever(
     section_id: str,
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.edit")
     sec = await db["spec_ship_sections"].find_one(
         {"_id": _oid(section_id), "tenantId": _oid(user["tenantId"])}
     )
@@ -3159,6 +3192,7 @@ async def ship_items_list(
     deleted: Optional[int] = Query(None),
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.view")
     q: Dict[str, Any] = {
         "tenantId": _oid(user["tenantId"]),
         "projectId": _oid(project_id),
@@ -3188,6 +3222,7 @@ async def ship_items_create(
     payload: dict = Body(...),
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.edit")
     now = datetime.utcnow()
     section_id = payload.get("shipmentSectionId") or payload.get("sectionId")
     if not section_id:
@@ -3266,6 +3301,7 @@ async def ship_items_update(
     payload: dict = Body(...),
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.edit")
     now = datetime.utcnow()
     it = await db["spec_ship_items"].find_one(
         {"_id": _oid(item_id), "tenantId": _oid(user["tenantId"])}
@@ -3342,6 +3378,7 @@ async def ship_items_delete_forever(
     item_id: str,
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.edit")
     it = await db["spec_ship_items"].find_one(
         {"_id": _oid(item_id), "tenantId": _oid(user["tenantId"])}
     )
@@ -3376,6 +3413,7 @@ async def ship_section_export_excel(
     section_id: str,
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.view")
     """ экспорт отгрузки в excel """
 
     sec = await db["spec_ship_sections"].find_one(
@@ -3591,6 +3629,7 @@ async def ship_section_import_excel(
     file: UploadFile = File(...),
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.edit")
     """ Импорт позиций отгрузки из excel-накладной  """
     sec = await db["spec_ship_sections"].find_one(
         {"_id": _oid(section_id), "tenantId": _oid(user["tenantId"])}
@@ -3770,6 +3809,7 @@ async def ship_section_attachments_list(
     section_id: str,
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.view")
     sec = await db["spec_ship_sections"].find_one(
         {"_id": _oid(section_id), "tenantId": _oid(user["tenantId"])}
     )
@@ -3819,6 +3859,7 @@ async def ship_section_attachments_upload(
     file: UploadFile = File(...),
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.edit")
     sec = await db["spec_ship_sections"].find_one(
         {"_id": _oid(section_id), "tenantId": _oid(user["tenantId"])}
     )
@@ -3872,6 +3913,7 @@ async def ship_section_attachments_download(
     file_id: str,
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.view")
     sec = await db["spec_ship_sections"].find_one(
         {"_id": _oid(section_id), "tenantId": _oid(user["tenantId"])}
     )
@@ -3911,6 +3953,7 @@ async def ship_section_attachments_delete(
     file_id: str,
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.edit")
     sec = await db["spec_ship_sections"].find_one(
         {"_id": _oid(section_id), "tenantId": _oid(user["tenantId"])}
     )
@@ -3948,6 +3991,7 @@ async def exec_sections_list(
     specSectionId: Optional[str] = Query(None),
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.view")
     q: Dict[str, Any] = {
         "tenantId": _oid(user["tenantId"]),
         "projectId": _oid(project_id),
@@ -3972,6 +4016,7 @@ async def exec_sections_create(
     payload: dict = Body(...),
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.edit")
     now = datetime.utcnow()
     title = (payload.get("title") or "").strip() or "Раздел выполнения"
     spec_section_id = payload.get("specSectionId")
@@ -4034,6 +4079,7 @@ async def exec_sections_update(
     payload: dict = Body(...),
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.edit")
     now = datetime.utcnow()
     sec = await db["spec_exec_sections"].find_one(
         {"_id": _oid(section_id), "tenantId": _oid(user["tenantId"])}
@@ -4105,6 +4151,7 @@ async def exec_sections_delete_forever(
     section_id: str,
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.edit")
     sec = await db["spec_exec_sections"].find_one(
         {"_id": _oid(section_id), "tenantId": _oid(user["tenantId"])}
     )
@@ -4148,6 +4195,7 @@ async def exec_items_list(
     deleted: Optional[int] = Query(None),
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.view")
     q: Dict[str, Any] = {
         "tenantId": _oid(user["tenantId"]),
         "projectId": _oid(project_id),
@@ -4175,6 +4223,7 @@ async def exec_items_create(
     payload: dict = Body(...),
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.edit")
     now = datetime.utcnow()
     section_id = payload.get("execSectionId") or payload.get("sectionId")
     if not section_id:
@@ -4249,6 +4298,7 @@ async def exec_items_update(
     payload: dict = Body(...),
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.edit")
     now = datetime.utcnow()
     it = await db["spec_exec_items"].find_one(
         {"_id": _oid(item_id), "tenantId": _oid(user["tenantId"])}
@@ -4318,6 +4368,7 @@ async def exec_items_delete_forever(
     item_id: str,
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.edit")
     it = await db["spec_exec_items"].find_one(
         {"_id": _oid(item_id), "tenantId": _oid(user["tenantId"])}
     )
@@ -4351,6 +4402,7 @@ async def spec_summary_export_excel(
     section_id: str,
     user=Depends(auth.get_current_user),
 ):
+    require_permission(user, "projects.view")
     """ Экспорт свода по разделу спецификации в Excel """
     tenant_id = _oid(user["tenantId"])
 
