@@ -356,7 +356,7 @@ async def spec_sections_update(
             "columns": cols,
             "versions": [{"v": int(x.get("v")), "savedAt": x.get("savedAt")} for x in (after.get("versions") or [])],
         }
-
+    
     # удалить конкретную версию раздела
     if "deleteVersion" in payload:
         v = int(payload["deleteVersion"])
@@ -700,7 +700,6 @@ async def spec_section_export_excel(
     Один лист "Раздел":
       заголовки групп (материалы, кабели и т.п.)
       позиции
-      сразу под позицией — строки работ
 
       Колонки:
         №, Наименование, Артикул, Поставщик, Единица измерения, Кол-во, Цена работы, Цена материалов, Стоимость, Примечание
@@ -781,27 +780,6 @@ async def spec_section_export_excel(
             else:
                 r["posDisplay"] = _mk_posstr(path)
 
-    # работы по позициям
-    works = (
-        await db["spec_item_works"]
-        .find(
-            {
-                "tenantId": tenant_id,
-                "projectId": project_oid,
-                "sectionId": section_oid,
-                "deleted": {"$ne": True},
-            }
-        )
-        .sort([("itemId", 1), ("order", 1), ("createdAt", 1)])
-        .to_list(100000)
-    )
-
-    from collections import defaultdict
-
-    works_by_item: Dict[str, List[dict]] = defaultdict(list)
-    for w in works:
-        works_by_item[str(w.get("itemId"))].append(w)
-    
     # формируем Excel
     try:
         wb = Workbook()
@@ -823,7 +801,6 @@ async def spec_section_export_excel(
         ws_spec.append(spec_headers)
 
         header_rows_excel: List[int] = []
-        work_rows_excel: List[int] = []
 
         for r in rows:
             if r["rowType"] == "header":
@@ -858,27 +835,6 @@ async def spec_section_export_excel(
                         r["note"],
                     ]
                 )
-
-                # работы под позицией
-                for w in works_by_item.get(r["itemId"], []):
-                    work_name = (w.get("name") or "").strip()
-                    qty_plan = w.get("qty_plan") or 0
-
-                    ws_spec.append(
-                        [
-                            "",
-                            work_name,
-                            "",
-                            "",
-                            "",
-                            qty_plan,
-                            "",
-                            "",
-                            "",
-                            "",
-                        ]
-                    )
-                    work_rows_excel.append(ws_spec.max_row)
 
         # оформление
         from openpyxl.styles import Border, Side, Alignment, Font, PatternFill
@@ -920,12 +876,6 @@ async def spec_section_export_excel(
             hdr_cell.alignment = Alignment(
                 horizontal="center", vertical="center", wrap_text=True
             )
-
-        # подсветка строк работ
-        work_fill_blue = PatternFill(start_color="DDEBF7", end_color="DDEBF7", fill_type="solid")
-        for row_idx in work_rows_excel:
-            for col in range(2, spec_max_col + 1):
-                ws_spec.cell(row=row_idx, column=col).fill = work_fill_blue
 
         # отдаём файл
         stream = BytesIO()
@@ -2171,6 +2121,823 @@ async def spec_works_delete_forever(
 
     return {"ok": True}
 
+# ВОР: разделы, работы и распределённые позиции
+
+def _vor_section_title(sec: dict) -> str:
+    number = (sec.get("number") or "").strip()
+    title = (sec.get("title") or "").strip()
+    if number and title and title != number:
+        return f"{number} · {title}"
+    return number or title or "ВОР"
+
+
+def _vor_work_title(w: dict) -> str:
+    return (w.get("name") or "").strip() or "Работа"
+
+
+def _vor_item_title(it: dict) -> str:
+    pos = (it.get("posStr") or "").strip()
+    name = (it.get("name") or "").strip()
+    if pos and name:
+        return f"{pos} {name}"
+    return name or pos or "Позиция ВОР"
+
+
+def _spec_item_current_qty(spec_item: dict) -> float:
+    return _num((spec_item or {}).get("qty"), 0)
+
+
+def _spec_item_sort_key(spec_item: dict):
+    path = spec_item.get("path") or []
+    if path:
+        return tuple(int(x or 0) for x in path)
+    pos_str = str(spec_item.get("posStr") or "")
+    parts = []
+    for chunk in pos_str.split("."):
+        try:
+            parts.append(int(chunk))
+        except Exception:
+            parts.append(0)
+    return tuple(parts)
+
+
+async def _vor_allocations_map(tenant_id, vor_section_id, exclude_item_id=None) -> Dict[str, float]:
+    q: Dict[str, Any] = {
+        "tenantId": _oid(tenant_id),
+        "vorSectionId": _oid(vor_section_id),
+        "deleted": {"$ne": True},
+    }
+    if exclude_item_id:
+        q["_id"] = {"$ne": _oid(exclude_item_id)}
+
+    rows = await db["spec_vor_items"].find(q).to_list(100000)
+    out: Dict[str, float] = defaultdict(float)
+    for row in rows:
+        sid = row.get("specItemId")
+        if not sid:
+            continue
+        out[str(sid)] += _num(row.get("qty"), 0)
+    return out
+
+
+@router.get("/api/projects/{project_id}/vor/sections")
+async def vor_sections_list(
+    project_id: str,
+    deleted: Optional[int] = Query(None),
+    user=Depends(auth.get_current_user),
+):
+    q: Dict[str, Any] = {
+        "tenantId": _oid(user["tenantId"]),
+        "projectId": _oid(project_id),
+    }
+    if deleted is not None:
+        q["deleted"] = bool(int(deleted))
+
+    items = (
+        await db["spec_vor_sections"]
+        .find(q)
+        .sort([("order", 1), ("createdAt", 1)])
+        .to_list(100000)
+    )
+    return {"items": [_norm(x) for x in items]}
+
+
+@router.post("/api/projects/{project_id}/vor/sections")
+async def vor_sections_create(
+    project_id: str,
+    payload: dict = Body(...),
+    user=Depends(auth.get_current_user),
+):
+    now = datetime.utcnow()
+
+    last = (
+        await db["spec_vor_sections"]
+        .find({"tenantId": _oid(user["tenantId"]), "projectId": _oid(project_id)})
+        .sort([("order", -1)])
+        .limit(1)
+        .to_list(1)
+    )
+    next_order = int((last[0]["order"] if last else 0) or 0) + 1
+
+    spec_section_id = payload.get("specSectionId")
+    spec_sec = None
+    if spec_section_id:
+        spec_sec = await db["spec_sections"].find_one(
+            {"_id": _oid(spec_section_id), "tenantId": _oid(user["tenantId"])}
+        )
+        if not spec_sec:
+            raise HTTPException(404, "Spec section not found")
+        if str(spec_sec.get("projectId")) != str(_oid(project_id)):
+            raise HTTPException(400, "Spec section belongs to another project")
+
+    number = (payload.get("number") or "").strip() or f"ВОР-{next_order}"
+    title = (payload.get("title") or "").strip() or number
+    date_value = (payload.get("date") or "").strip() or now.date().isoformat()
+
+    doc = {
+        "tenantId": _oid(user["tenantId"]),
+        "projectId": _oid(project_id),
+        "title": title,
+        "number": number,
+        "date": date_value,
+        "specSectionId": _oid(spec_section_id) if spec_section_id else None,
+        "order": next_order,
+        "deleted": False,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+    res = await db["spec_vor_sections"].insert_one(doc)
+    created = await db["spec_vor_sections"].find_one({"_id": res.inserted_id})
+
+    try:
+        await log_project_action(
+            db,
+            user,
+            project_id=project_id,
+            action="spec.vor.section.create",
+            entity="spec.vor.section",
+            entity_id=str(res.inserted_id),
+            message=f'Создан ВОР «{_vor_section_title(created)}»',
+            meta={
+                "vorSectionId": str(res.inserted_id),
+                "specSectionId": str(spec_section_id) if spec_section_id else None,
+            },
+        )
+    except Exception:
+        pass
+
+    return _norm(created)
+
+
+@router.patch("/api/vor/sections/{section_id}")
+async def vor_sections_update(
+    section_id: str,
+    payload: dict = Body(...),
+    user=Depends(auth.get_current_user),
+):
+    now = datetime.utcnow()
+    sec = await db["spec_vor_sections"].find_one(
+        {"_id": _oid(section_id), "tenantId": _oid(user["tenantId"])}
+    )
+    if not sec:
+        raise HTTPException(404, "VOR section not found")
+
+    before = dict(sec)
+    updates: Dict[str, Any] = {}
+
+    if "title" in payload:
+        updates["title"] = (payload.get("title") or "").strip()
+    if "number" in payload:
+        updates["number"] = (payload.get("number") or "").strip()
+    if "date" in payload:
+        updates["date"] = (payload.get("date") or "").strip()
+    if "order" in payload:
+        try:
+            updates["order"] = int(payload.get("order") or 0)
+        except Exception:
+            pass
+
+    if "specSectionId" in payload:
+        val = payload.get("specSectionId")
+        new_spec_oid = _oid(val) if val else None
+        if new_spec_oid:
+            spec_sec = await db["spec_sections"].find_one(
+                {"_id": new_spec_oid, "tenantId": _oid(user["tenantId"])}
+            )
+            if not spec_sec:
+                raise HTTPException(404, "Spec section not found")
+            if str(spec_sec.get("projectId")) != str(sec.get("projectId")):
+                raise HTTPException(400, "Spec section belongs to another project")
+        if str(sec.get("specSectionId") or "") != str(new_spec_oid or ""):
+            items_count = await db["spec_vor_items"].count_documents(
+                {
+                    "tenantId": _oid(user["tenantId"]),
+                    "vorSectionId": sec["_id"],
+                    "deleted": {"$ne": True},
+                }
+            )
+            if items_count > 0:
+                raise HTTPException(400, "Нельзя сменить спецификацию, пока в ВОР есть перенесённые позиции")
+        updates["specSectionId"] = new_spec_oid
+
+    cascade_deleted: Optional[bool] = None
+    if "deleted" in payload:
+        cascade_deleted = bool(payload.get("deleted"))
+        updates["deleted"] = cascade_deleted
+
+    if not updates:
+        return _norm(sec)
+
+    updates["updatedAt"] = now
+    await db["spec_vor_sections"].update_one({"_id": sec["_id"]}, {"$set": updates})
+
+    if cascade_deleted is not None:
+        now2 = datetime.utcnow()
+        await db["spec_vor_works"].update_many(
+            {"tenantId": _oid(user["tenantId"]), "vorSectionId": sec["_id"]},
+            {"$set": {"deleted": cascade_deleted, "updatedAt": now2}},
+        )
+        await db["spec_vor_items"].update_many(
+            {"tenantId": _oid(user["tenantId"]), "vorSectionId": sec["_id"]},
+            {"$set": {"deleted": cascade_deleted, "updatedAt": now2}},
+        )
+
+    after = await db["spec_vor_sections"].find_one({"_id": sec["_id"]})
+    try:
+        diff = make_diff(before, after)
+        if diff:
+            await log_project_action(
+                db,
+                user,
+                project_id=after.get("projectId"),
+                action="spec.vor.section.update",
+                entity="spec.vor.section",
+                entity_id=str(after["_id"]),
+                message=f'Обновлён ВОР «{_vor_section_title(after)}»',
+                diff=diff,
+                meta={
+                    "vorSectionId": str(after["_id"]),
+                    "specSectionId": str(after.get("specSectionId")) if after.get("specSectionId") else None,
+                },
+            )
+    except Exception:
+        pass
+
+    return _norm(after)
+
+@router.delete("/api/vor/sections/{section_id}")
+async def vor_sections_delete_forever(
+    section_id: str,
+    user=Depends(auth.get_current_user),
+):
+    sec = await db["spec_vor_sections"].find_one(
+        {"_id": _oid(section_id), "tenantId": _oid(user["tenantId"])}
+    )
+    if not sec:
+        raise HTTPException(404, "VOR section not found")
+
+    res_items = await db["spec_vor_items"].delete_many(
+        {"tenantId": _oid(user["tenantId"]), "vorSectionId": sec["_id"]}
+    )
+    res_works = await db["spec_vor_works"].delete_many(
+        {"tenantId": _oid(user["tenantId"]), "vorSectionId": sec["_id"]}
+    )
+    await db["spec_vor_sections"].delete_one({"_id": sec["_id"]})
+
+    try:
+        await log_project_action(
+            db,
+            user,
+            project_id=sec.get("projectId"),
+            action="spec.vor.section.delete",
+            entity="spec.vor.section",
+            entity_id=str(section_id),
+            message=f'Полностью удалён ВОР «{_vor_section_title(sec)}»',
+            meta={
+                "vorSectionId": str(section_id),
+                "itemsDeleted": res_items.deleted_count,
+                "worksDeleted": res_works.deleted_count,
+            },
+        )
+    except Exception:
+        pass
+
+    return {"ok": True}
+
+
+@router.get("/api/projects/{project_id}/vor/works")
+async def vor_works_list(
+    project_id: str,
+    vorSectionId: Optional[str] = Query(None),
+    deleted: Optional[int] = Query(None),
+    user=Depends(auth.get_current_user),
+):
+    q: Dict[str, Any] = {
+        "tenantId": _oid(user["tenantId"]),
+        "projectId": _oid(project_id),
+    }
+    if vorSectionId:
+        q["vorSectionId"] = _oid(vorSectionId)
+    if deleted is not None:
+        q["deleted"] = bool(int(deleted))
+
+    items = (
+        await db["spec_vor_works"]
+        .find(q)
+        .sort([("order", 1), ("createdAt", 1)])
+        .to_list(100000)
+    )
+    return {"items": [_norm(x) for x in items]}
+
+
+@router.post("/api/projects/{project_id}/vor/works")
+async def vor_works_create(
+    project_id: str,
+    payload: dict = Body(...),
+    user=Depends(auth.get_current_user),
+):
+    now = datetime.utcnow()
+    vor_section_id = payload.get("vorSectionId")
+    if not vor_section_id:
+        raise HTTPException(400, "vorSectionId is required")
+
+    sec = await db["spec_vor_sections"].find_one(
+        {"_id": _oid(vor_section_id), "tenantId": _oid(user["tenantId"])}
+    )
+    if not sec:
+        raise HTTPException(404, "VOR section not found")
+    if str(sec.get("projectId")) != str(_oid(project_id)):
+        raise HTTPException(400, "VOR section belongs to another project")
+
+    last = (
+        await db["spec_vor_works"]
+        .find(
+            {
+                "tenantId": _oid(user["tenantId"]),
+                "projectId": _oid(project_id),
+                "vorSectionId": sec["_id"],
+            }
+        )
+        .sort([("order", -1)])
+        .limit(1)
+        .to_list(1)
+    )
+    next_order = int((last[0]["order"] if last else 0) or 0) + 1
+
+    doc = {
+        "tenantId": _oid(user["tenantId"]),
+        "projectId": _oid(project_id),
+        "vorSectionId": sec["_id"],
+        "name": (payload.get("name") or "").strip() or f"Работа {next_order}",
+        "order": next_order,
+        "isCollapsed": bool(payload.get("isCollapsed", False)),
+        "deleted": False,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+    res = await db["spec_vor_works"].insert_one(doc)
+    created = await db["spec_vor_works"].find_one({"_id": res.inserted_id})
+
+    try:
+        await log_project_action(
+            db,
+            user,
+            project_id=project_id,
+            action="spec.vor.work.create",
+            entity="spec.vor.work",
+            entity_id=str(res.inserted_id),
+            message=f'Создана работа ВОР «{_vor_work_title(created)}»',
+            meta={"vorWorkId": str(res.inserted_id), "vorSectionId": str(sec["_id"])},
+        )
+    except Exception:
+        pass
+
+    return _norm(created)
+
+
+@router.patch("/api/vor/works/{work_id}")
+async def vor_works_update(
+    work_id: str,
+    payload: dict = Body(...),
+    user=Depends(auth.get_current_user),
+):
+    now = datetime.utcnow()
+    work = await db["spec_vor_works"].find_one(
+        {"_id": _oid(work_id), "tenantId": _oid(user["tenantId"])}
+    )
+    if not work:
+        raise HTTPException(404, "VOR work not found")
+
+    before = dict(work)
+    updates: Dict[str, Any] = {}
+    if "name" in payload:
+        updates["name"] = (payload.get("name") or "").strip()
+    if "order" in payload:
+        try:
+            updates["order"] = int(payload.get("order") or 0)
+        except Exception:
+            pass
+    if "isCollapsed" in payload:
+        updates["isCollapsed"] = bool(payload.get("isCollapsed"))
+    cascade_deleted: Optional[bool] = None
+    if "deleted" in payload:
+        cascade_deleted = bool(payload.get("deleted"))
+        updates["deleted"] = cascade_deleted
+
+    if not updates:
+        return _norm(work)
+
+    updates["updatedAt"] = now
+    await db["spec_vor_works"].update_one({"_id": work["_id"]}, {"$set": updates})
+
+    if cascade_deleted is not None:
+        now2 = datetime.utcnow()
+        await db["spec_vor_items"].update_many(
+            {"tenantId": _oid(user["tenantId"]), "workId": work["_id"]},
+            {"$set": {"deleted": cascade_deleted, "updatedAt": now2}},
+        )
+
+    after = await db["spec_vor_works"].find_one({"_id": work["_id"]})
+    try:
+        diff = make_diff(before, after)
+        if diff:
+            await log_project_action(
+                db,
+                user,
+                project_id=after.get("projectId"),
+                action="spec.vor.work.update",
+                entity="spec.vor.work",
+                entity_id=str(after["_id"]),
+                message=f'Обновлена работа ВОР «{_vor_work_title(after)}»',
+                diff=diff,
+                meta={"vorWorkId": str(after["_id"]), "vorSectionId": str(after.get("vorSectionId"))},
+            )
+    except Exception:
+        pass
+
+    return _norm(after)
+
+
+@router.delete("/api/vor/works/{work_id}")
+async def vor_works_delete_forever(
+    work_id: str,
+    user=Depends(auth.get_current_user),
+):
+    work = await db["spec_vor_works"].find_one(
+        {"_id": _oid(work_id), "tenantId": _oid(user["tenantId"])}
+    )
+    if not work:
+        raise HTTPException(404, "VOR work not found")
+
+    res_items = await db["spec_vor_items"].delete_many(
+        {"tenantId": _oid(user["tenantId"]), "workId": work["_id"]}
+    )
+    await db["spec_vor_works"].delete_one({"_id": work["_id"]})
+
+    try:
+        await log_project_action(
+            db,
+            user,
+            project_id=work.get("projectId"),
+            action="spec.vor.work.delete",
+            entity="spec.vor.work",
+            entity_id=str(work_id),
+            message=f'Полностью удалена работа ВОР «{_vor_work_title(work)}»',
+            meta={
+                "vorWorkId": str(work_id),
+                "vorSectionId": str(work.get("vorSectionId")),
+                "itemsDeleted": res_items.deleted_count,
+            },
+        )
+    except Exception:
+        pass
+
+    return {"ok": True}
+
+
+@router.get("/api/projects/{project_id}/vor/items")
+async def vor_items_list(
+    project_id: str,
+    vorSectionId: Optional[str] = Query(None),
+    workId: Optional[str] = Query(None),
+    deleted: Optional[int] = Query(None),
+    user=Depends(auth.get_current_user),
+):
+    q: Dict[str, Any] = {
+        "tenantId": _oid(user["tenantId"]),
+        "projectId": _oid(project_id),
+    }
+    if vorSectionId:
+        q["vorSectionId"] = _oid(vorSectionId)
+    if workId:
+        q["workId"] = _oid(workId)
+    if deleted is not None:
+        q["deleted"] = bool(int(deleted))
+
+    items = (
+        await db["spec_vor_items"]
+        .find(q)
+        .sort([("order", 1), ("createdAt", 1)])
+        .to_list(100000)
+    )
+    return {"items": [_norm(x) for x in items]}
+
+
+@router.get("/api/projects/{project_id}/vor/source-items")
+async def vor_source_items(
+    project_id: str,
+    vorSectionId: str = Query(...),
+    user=Depends(auth.get_current_user),
+):
+    sec = await db["spec_vor_sections"].find_one(
+        {"_id": _oid(vorSectionId), "tenantId": _oid(user["tenantId"])}
+    )
+    if not sec:
+        raise HTTPException(404, "VOR section not found")
+    if str(sec.get("projectId")) != str(_oid(project_id)):
+        raise HTTPException(400, "VOR section belongs to another project")
+
+    spec_section_id = sec.get("specSectionId")
+    if not spec_section_id:
+        return {"items": []}
+
+    spec_items = await db["spec_items"].find(
+        {
+            "tenantId": _oid(user["tenantId"]),
+            "projectId": _oid(project_id),
+            "sectionId": spec_section_id,
+            "deleted": {"$ne": True},
+        }
+    ).to_list(100000)
+
+    allocations = await _vor_allocations_map(user["tenantId"], sec["_id"])
+
+    result: List[dict] = []
+    for spec_item in sorted(spec_items, key=_spec_item_sort_key):
+        if (spec_item.get("rowType") or "item") == "header":
+            continue
+        qty_total = _spec_item_current_qty(spec_item)
+        qty_used = _num(allocations.get(str(spec_item["_id"])), 0)
+        qty_remaining = round(qty_total - qty_used, 6)
+        if qty_remaining <= 0:
+            continue
+
+        result.append(
+            {
+                "specItemId": str(spec_item["_id"]),
+                "sectionId": str(spec_item.get("sectionId")) if spec_item.get("sectionId") else None,
+                "posStr": spec_item.get("posStr") or str(spec_item.get("pos") or ""),
+                "name": spec_item.get("name") or "",
+                "unit": spec_item.get("unit") or "",
+                "qty": qty_total,
+                "qtyUsed": qty_used,
+                "qtyRemaining": qty_remaining,
+            }
+        )
+
+    return {"items": result}
+
+@router.post("/api/projects/{project_id}/vor/items")
+async def vor_items_create(
+    project_id: str,
+    payload: dict = Body(...),
+    user=Depends(auth.get_current_user),
+):
+    now = datetime.utcnow()
+    vor_section_id = payload.get("vorSectionId")
+    work_id = payload.get("workId")
+    spec_item_id = payload.get("specItemId")
+    qty = _num(payload.get("qty"), 0)
+
+    if not vor_section_id:
+        raise HTTPException(400, "vorSectionId is required")
+    if not work_id:
+        raise HTTPException(400, "workId is required")
+    if not spec_item_id:
+        raise HTTPException(400, "specItemId is required")
+    if qty <= 0:
+        raise HTTPException(400, "qty must be greater than 0")
+
+    sec = await db["spec_vor_sections"].find_one(
+        {"_id": _oid(vor_section_id), "tenantId": _oid(user["tenantId"])}
+    )
+    if not sec:
+        raise HTTPException(404, "VOR section not found")
+    if str(sec.get("projectId")) != str(_oid(project_id)):
+        raise HTTPException(400, "VOR section belongs to another project")
+    if not sec.get("specSectionId"):
+        raise HTTPException(400, "Для ВОР не выбрана спецификация")
+
+    work = await db["spec_vor_works"].find_one(
+        {"_id": _oid(work_id), "tenantId": _oid(user["tenantId"]), "deleted": {"$ne": True}}
+    )
+    if not work:
+        raise HTTPException(404, "VOR work not found")
+    if str(work.get("vorSectionId")) != str(sec["_id"]):
+        raise HTTPException(400, "Работа не принадлежит этому ВОР")
+
+    spec_item = await db["spec_items"].find_one(
+        {"_id": _oid(spec_item_id), "tenantId": _oid(user["tenantId"]), "deleted": {"$ne": True}}
+    )
+    if not spec_item:
+        raise HTTPException(404, "Spec item not found")
+    if str(spec_item.get("projectId")) != str(_oid(project_id)):
+        raise HTTPException(400, "Spec item belongs to another project")
+    if str(spec_item.get("sectionId")) != str(sec.get("specSectionId")):
+        raise HTTPException(400, "Позиция не принадлежит выбранной спецификации")
+    if (spec_item.get("rowType") or "item") == "header":
+        raise HTTPException(400, "Нельзя переносить заголовок")
+
+    allocations = await _vor_allocations_map(user["tenantId"], sec["_id"])
+    qty_total = _spec_item_current_qty(spec_item)
+    qty_used = _num(allocations.get(str(spec_item["_id"])), 0)
+    qty_remaining = round(qty_total - qty_used, 6)
+    if qty > qty_remaining + 1e-9:
+        raise HTTPException(400, f"Доступный остаток: {qty_remaining}")
+
+    existing = await db["spec_vor_items"].find_one(
+        {
+            "tenantId": _oid(user["tenantId"]),
+            "projectId": _oid(project_id),
+            "vorSectionId": sec["_id"],
+            "workId": work["_id"],
+            "specItemId": spec_item["_id"],
+            "deleted": {"$ne": True},
+        }
+    )
+
+    if existing:
+        new_qty = _num(existing.get("qty"), 0) + qty
+        await db["spec_vor_items"].update_one(
+            {"_id": existing["_id"]},
+            {"$set": {"qty": new_qty, "updatedAt": now}},
+        )
+        created = await db["spec_vor_items"].find_one({"_id": existing["_id"]})
+    else:
+        last = (
+            await db["spec_vor_items"]
+            .find(
+                {
+                    "tenantId": _oid(user["tenantId"]),
+                    "projectId": _oid(project_id),
+                    "workId": work["_id"],
+                }
+            )
+            .sort([("order", -1)])
+            .limit(1)
+            .to_list(1)
+        )
+        next_order = int((last[0]["order"] if last else 0) or 0) + 1
+
+        doc = {
+            "tenantId": _oid(user["tenantId"]),
+            "projectId": _oid(project_id),
+            "vorSectionId": sec["_id"],
+            "workId": work["_id"],
+            "specItemId": spec_item["_id"],
+            "specSectionId": sec.get("specSectionId"),
+            "posStr": spec_item.get("posStr") or str(spec_item.get("pos") or ""),
+            "name": spec_item.get("name") or "",
+            "unit": spec_item.get("unit") or "",
+            "qty": qty,
+            "order": next_order,
+            "deleted": False,
+            "createdAt": now,
+            "updatedAt": now,
+        }
+        res = await db["spec_vor_items"].insert_one(doc)
+        created = await db["spec_vor_items"].find_one({"_id": res.inserted_id})
+
+    try:
+        await log_project_action(
+            db,
+            user,
+            project_id=project_id,
+            action="spec.vor.item.create",
+            entity="spec.vor.item",
+            entity_id=str(created["_id"]),
+            message=f'Позиция «{_vor_item_title(created)}» перенесена в работу «{_vor_work_title(work)}»',
+            meta={
+                "vorItemId": str(created["_id"]),
+                "vorSectionId": str(sec["_id"]),
+                "vorWorkId": str(work["_id"]),
+                "specItemId": str(spec_item["_id"]),
+                "qty": qty,
+            },
+        )
+    except Exception:
+        pass
+
+    return _norm(created)
+
+
+@router.patch("/api/vor/items/{item_id}")
+async def vor_items_update(
+    item_id: str,
+    payload: dict = Body(...),
+    user=Depends(auth.get_current_user),
+):
+    now = datetime.utcnow()
+    row = await db["spec_vor_items"].find_one(
+        {"_id": _oid(item_id), "tenantId": _oid(user["tenantId"])}
+    )
+    if not row:
+        raise HTTPException(404, "VOR item not found")
+
+    before = dict(row)
+    updates: Dict[str, Any] = {}
+
+    target_work = None
+    if "workId" in payload and payload.get("workId"):
+        target_work = await db["spec_vor_works"].find_one(
+            {"_id": _oid(payload.get("workId")), "tenantId": _oid(user["tenantId"]), "deleted": {"$ne": True}}
+        )
+        if not target_work:
+            raise HTTPException(404, "VOR work not found")
+        if str(target_work.get("vorSectionId")) != str(row.get("vorSectionId")):
+            raise HTTPException(400, "Работа не принадлежит этому ВОР")
+        updates["workId"] = target_work["_id"]
+
+    if "qty" in payload:
+        new_qty = _num(payload.get("qty"), 0)
+        if new_qty <= 0:
+            raise HTTPException(400, "qty must be greater than 0")
+
+        sec = await db["spec_vor_sections"].find_one(
+            {"_id": row.get("vorSectionId"), "tenantId": _oid(user["tenantId"])}
+        )
+        if not sec:
+            raise HTTPException(404, "VOR section not found")
+        spec_item = await db["spec_items"].find_one(
+            {"_id": row.get("specItemId"), "tenantId": _oid(user["tenantId"]), "deleted": {"$ne": True}}
+        )
+        if not spec_item:
+            raise HTTPException(404, "Spec item not found")
+
+        allocations = await _vor_allocations_map(user["tenantId"], row.get("vorSectionId"), exclude_item_id=row["_id"])
+        qty_total = _spec_item_current_qty(spec_item)
+        qty_used_elsewhere = _num(allocations.get(str(spec_item["_id"])), 0)
+        qty_remaining = round(qty_total - qty_used_elsewhere, 6)
+        if new_qty > qty_remaining + 1e-9:
+            raise HTTPException(400, f"Доступный остаток: {qty_remaining}")
+
+        updates["qty"] = new_qty
+
+    if "order" in payload:
+        try:
+            updates["order"] = int(payload.get("order") or 0)
+        except Exception:
+            pass
+
+    if "deleted" in payload:
+        updates["deleted"] = bool(payload.get("deleted"))
+
+    if not updates:
+        return _norm(row)
+
+    updates["updatedAt"] = now
+    await db["spec_vor_items"].update_one({"_id": row["_id"]}, {"$set": updates})
+    after = await db["spec_vor_items"].find_one({"_id": row["_id"]})
+
+    try:
+        diff = make_diff(before, after)
+        if diff:
+            await log_project_action(
+                db,
+                user,
+                project_id=after.get("projectId"),
+                action="spec.vor.item.update",
+                entity="spec.vor.item",
+                entity_id=str(after["_id"]),
+                message=f'Обновлена позиция ВОР «{_vor_item_title(after)}»',
+                diff=diff,
+                meta={
+                    "vorItemId": str(after["_id"]),
+                    "vorSectionId": str(after.get("vorSectionId")),
+                    "vorWorkId": str(after.get("workId")),
+                    "specItemId": str(after.get("specItemId")),
+                },
+            )
+    except Exception:
+        pass
+
+    return _norm(after)
+
+@router.delete("/api/vor/items/{item_id}")
+async def vor_items_delete_forever(
+    item_id: str,
+    user=Depends(auth.get_current_user),
+):
+    row = await db["spec_vor_items"].find_one(
+        {"_id": _oid(item_id), "tenantId": _oid(user["tenantId"])}
+    )
+    if not row:
+        raise HTTPException(404, "VOR item not found")
+
+    await db["spec_vor_items"].delete_one({"_id": row["_id"]})
+
+    try:
+        await log_project_action(
+            db,
+            user,
+            project_id=row.get("projectId"),
+            action="spec.vor.item.delete",
+            entity="spec.vor.item",
+            entity_id=str(item_id),
+            message=f'Полностью удалена позиция ВОР «{_vor_item_title(row)}»',
+            meta={
+                "vorItemId": str(item_id),
+                "vorSectionId": str(row.get("vorSectionId")),
+                "vorWorkId": str(row.get("workId")),
+                "specItemId": str(row.get("specItemId")),
+            },
+        )
+    except Exception:
+        pass
+
+    return {"ok": True}
+
+
 # ОТГРУЗКА: РАЗДЕЛЫ И ПОЗИЦИИ
 
 def _ship_section_title(sec: dict) -> str:
@@ -3099,7 +3866,6 @@ async def ship_section_attachments_upload(
 
     return {"_id": str(grid_in._id), "filename": filename, "size": size}
 
-
 @router.get("/api/ship/sections/{section_id}/attachments/{file_id}/download")
 async def ship_section_attachments_download(
     section_id: str,
@@ -3850,7 +4616,6 @@ async def spec_summary_export_excel(
                     )
                     cell.fill = work_fill
                 row_idx += 1
-
     # ширина колонок
     widths = {1: 5, 2: 70, 3: 10, 4: 20, 5: 20, 6: 20}
     for col_idx, width in widths.items():
