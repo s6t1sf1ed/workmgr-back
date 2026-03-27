@@ -180,7 +180,72 @@ def _section_meta(sec: dict) -> dict:
         "version": int(sec.get("version", sec.get("activeVersion", 1) or 1)),
         "activeVersion": int(sec.get("activeVersion", 1)),
         "deleted": bool(sec.get("deleted", False)),
+        "isActual": bool(sec.get("isActual", True)),
     }
+
+
+def _actuality_key(*parts: Any) -> str:
+    raw = " ".join(str(p or "").strip() for p in parts if str(p or "").strip())
+    if not raw:
+        return "__default__"
+    raw = raw.lower().replace("ё", "е")
+    raw = re.sub(r"\s+", " ", raw).strip()
+    return raw or "__default__"
+
+
+def _actuality_group_or(title: str, key: str) -> List[Dict[str, Any]]:
+    title_clean = (title or "").strip()
+    missing_key = {
+        "$or": [
+            {"actualityKey": {"$exists": False}},
+            {"actualityKey": None},
+            {"actualityKey": ""},
+        ]
+    }
+    groups: List[Dict[str, Any]] = [{"actualityKey": key}]
+    if title_clean:
+        groups.append({"$and": [{"title": title_clean}, missing_key]})
+    return groups
+
+
+async def _apply_spec_section_actuality(tenant_id, project_id, section_id, title: str, is_actual: bool) -> str:
+    key = _actuality_key(title)
+    now = datetime.utcnow()
+    await db["spec_sections"].update_one(
+        {"_id": _oid(section_id), "tenantId": _oid(tenant_id)},
+        {"$set": {"actualityKey": key, "isActual": bool(is_actual), "updatedAt": now}},
+    )
+    if is_actual:
+        await db["spec_sections"].update_many(
+            {
+                "tenantId": _oid(tenant_id),
+                "projectId": _oid(project_id),
+                "_id": {"$ne": _oid(section_id)},
+                "$or": _actuality_group_or(title, key),
+            },
+            {"$set": {"actualityKey": key, "isActual": False, "updatedAt": now}},
+        )
+    return key
+
+
+async def _apply_vor_section_actuality(tenant_id, project_id, section_id, title: str, is_actual: bool) -> str:
+    key = _actuality_key(title)
+    now = datetime.utcnow()
+    await db["spec_vor_sections"].update_one(
+        {"_id": _oid(section_id), "tenantId": _oid(tenant_id)},
+        {"$set": {"actualityKey": key, "isActual": bool(is_actual), "updatedAt": now}},
+    )
+    if is_actual:
+        await db["spec_vor_sections"].update_many(
+            {
+                "tenantId": _oid(tenant_id),
+                "projectId": _oid(project_id),
+                "_id": {"$ne": _oid(section_id)},
+                "$or": _actuality_group_or(title, key),
+            },
+            {"$set": {"actualityKey": key, "isActual": False, "updatedAt": now}},
+        )
+    return key
 
 
 def _item_meta(it: dict) -> dict:
@@ -229,6 +294,8 @@ async def spec_sections_list(
                 "activeVersion": av,
                 "versions": [{"v": int(x.get("v")), "savedAt": x.get("savedAt")} for x in svers],
                 "columns": (rec or {}).get("columns") or DEFAULT_COLUMNS,
+                "isActual": bool(s.get("isActual", True)),
+                "actualityKey": s.get("actualityKey") or _actuality_key(s.get("title")),
             }
         )
     return {"items": out}
@@ -260,6 +327,8 @@ async def spec_sections_create(
         "order": next_order,
         "comment": "",
         "deleted": False,
+        "isActual": bool(payload.get("isActual", True)),
+        "actualityKey": _actuality_key(title),
         "versions": [
             {
                 "v": 1,
@@ -274,6 +343,14 @@ async def spec_sections_create(
         "updatedAt": now,
     }
     res = await db["spec_sections"].insert_one(doc)
+    created = await db["spec_sections"].find_one({"_id": res.inserted_id})
+    await _apply_spec_section_actuality(
+        user["tenantId"],
+        project_id,
+        res.inserted_id,
+        title,
+        bool(created.get("isActual", True)),
+    )
     created = await db["spec_sections"].find_one({"_id": res.inserted_id})
 
     av = int(created.get("activeVersion", 1))
@@ -296,6 +373,8 @@ async def spec_sections_create(
         **_norm(created),
         "columns": cols,
         "versions": [{"v": 1, "savedAt": now}],
+        "isActual": bool(created.get("isActual", True)),
+        "actualityKey": created.get("actualityKey") or _actuality_key(created.get("title")),
     }
 
 @router.patch("/api/spec/sections/{section_id}")
@@ -614,12 +693,27 @@ async def spec_sections_update(
         cascade_deleted = updates["deleted"]
     if "comment" in payload:
         updates["comment"] = payload.get("comment") or ""
+    if "isActual" in payload:
+        updates["isActual"] = bool(payload.get("isActual"))
+    if "title" in updates:
+        updates["actualityKey"] = _actuality_key(updates["title"])
 
     if not updates:
         return _norm(sec)
 
     updates["updatedAt"] = datetime.utcnow()
     await db["spec_sections"].update_one({"_id": sec["_id"]}, {"$set": updates})
+
+    final_title = (updates.get("title") if "title" in updates else sec.get("title") or "").strip()
+    final_is_actual = bool(updates.get("isActual", sec.get("isActual", True)))
+    if "title" in updates or "isActual" in updates:
+        await _apply_spec_section_actuality(
+            user["tenantId"],
+            sec.get("projectId"),
+            sec["_id"],
+            final_title,
+            final_is_actual,
+        )
 
     if cascade_deleted is not None:
         now2 = datetime.utcnow()
@@ -647,7 +741,12 @@ async def spec_sections_update(
             )
     except Exception:
         pass
-    return {**_norm(after), "columns": cols}
+    return {
+        **_norm(after),
+        "columns": cols,
+        "isActual": bool(after.get("isActual", True)),
+        "actualityKey": after.get("actualityKey") or _actuality_key(after.get("title")),
+    }
 
 @router.delete("/api/spec/sections/{section_id}")
 async def spec_sections_delete_forever(
@@ -2043,7 +2142,11 @@ async def spec_works_create(
     except Exception:
         pass
 
-    return _norm(created)
+    return {
+        **_norm(created),
+        "isActual": bool(created.get("isActual", True)),
+        "actualityKey": created.get("actualityKey") or _actuality_key(created.get("title")),
+    }
 
 @router.patch("/api/spec/works/{work_id}")
 async def spec_works_update(
@@ -2218,7 +2321,16 @@ async def vor_sections_list(
         .sort([("order", 1), ("createdAt", 1)])
         .to_list(100000)
     )
-    return {"items": [_norm(x) for x in items]}
+    return {
+        "items": [
+            {
+                **_norm(x),
+                "isActual": bool(x.get("isActual", True)),
+                "actualityKey": x.get("actualityKey") or _actuality_key(x.get("title")),
+            }
+            for x in items
+        ]
+    }
 
 
 @router.post("/api/projects/{project_id}/vor/sections")
@@ -2263,10 +2375,20 @@ async def vor_sections_create(
         "specSectionId": _oid(spec_section_id) if spec_section_id else None,
         "order": next_order,
         "deleted": False,
+        "isActual": bool(payload.get("isActual", True)),
+        "actualityKey": _actuality_key(title),
         "createdAt": now,
         "updatedAt": now,
     }
     res = await db["spec_vor_sections"].insert_one(doc)
+    created = await db["spec_vor_sections"].find_one({"_id": res.inserted_id})
+    await _apply_vor_section_actuality(
+        user["tenantId"],
+        project_id,
+        res.inserted_id,
+        title,
+        bool(created.get("isActual", True)),
+    )
     created = await db["spec_vor_sections"].find_one({"_id": res.inserted_id})
 
     try:
@@ -2286,7 +2408,11 @@ async def vor_sections_create(
     except Exception:
         pass
 
-    return _norm(created)
+    return {
+        **_norm(created),
+        "isActual": bool(created.get("isActual", True)),
+        "actualityKey": created.get("actualityKey") or _actuality_key(created.get("title")),
+    }
 
 
 @router.patch("/api/vor/sections/{section_id}")
@@ -2345,12 +2471,27 @@ async def vor_sections_update(
     if "deleted" in payload:
         cascade_deleted = bool(payload.get("deleted"))
         updates["deleted"] = cascade_deleted
+    if "isActual" in payload:
+        updates["isActual"] = bool(payload.get("isActual"))
+    if "title" in updates:
+        updates["actualityKey"] = _actuality_key(updates["title"])
 
     if not updates:
         return _norm(sec)
 
     updates["updatedAt"] = now
     await db["spec_vor_sections"].update_one({"_id": sec["_id"]}, {"$set": updates})
+
+    final_title = (updates.get("title") if "title" in updates else sec.get("title") or "").strip()
+    final_is_actual = bool(updates.get("isActual", sec.get("isActual", True)))
+    if "title" in updates or "isActual" in updates:
+        await _apply_vor_section_actuality(
+            user["tenantId"],
+            sec.get("projectId"),
+            sec["_id"],
+            final_title,
+            final_is_actual,
+        )
 
     if cascade_deleted is not None:
         now2 = datetime.utcnow()
@@ -2384,7 +2525,11 @@ async def vor_sections_update(
     except Exception:
         pass
 
-    return _norm(after)
+    return {
+        **_norm(after),
+        "isActual": bool(after.get("isActual", True)),
+        "actualityKey": after.get("actualityKey") or _actuality_key(after.get("title")),
+    }
 
 @router.delete("/api/vor/sections/{section_id}")
 async def vor_sections_delete_forever(
@@ -2647,7 +2792,6 @@ async def vor_items_list(
         .to_list(100000)
     )
     return {"items": [_norm(x) for x in items]}
-
 
 @router.get("/api/projects/{project_id}/vor/source-items")
 async def vor_source_items(
@@ -3551,7 +3695,7 @@ async def ship_section_export_excel(
                 total,
             ]
         )
-
+    
     # Ширина колонок
     widths = {
         1: 5,   # №
@@ -4450,7 +4594,7 @@ async def spec_summary_export_excel(
             or it.get("header")
             or it.get("rowType") == "header"
         )
-
+    
     # разбиваем на блоки: заголовок + позиции под ним
     groups: list[dict] = []
     current: dict | None = None
